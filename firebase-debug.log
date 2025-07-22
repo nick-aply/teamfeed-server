@@ -22,3 +22,24 @@ You're about to initialize a Firebase project in this directory:
 
 [debug] [2025-06-24T09:02:55.312Z] <<< [apiv2][status] GET https://firebase-public.firebaseio.com/cli.json 200
 [debug] [2025-06-24T09:02:55.312Z] <<< [apiv2][body] GET https://firebase-public.firebaseio.com/cli.json {"cloudBuildErrorAfter":1594252800000,"cloudBuildWarnAfter":1590019200000,"defaultNode10After":1594252800000,"minVersion":"3.0.5","node8DeploysDisabledAfter":1613390400000,"node8RuntimeDisabledAfter":1615809600000,"node8WarnAfter":1600128000000}
+[debug] [2025-07-21T22:56:27.151Z] ----------------------------------------------------------------------
+[debug] [2025-07-21T22:56:27.152Z] Command:       /Users/nick/.nvm/versions/node/v18.18.2/bin/node /opt/homebrew/bin/firebase init
+[debug] [2025-07-21T22:56:27.152Z] CLI Version:   13.25.0
+[debug] [2025-07-21T22:56:27.153Z] Platform:      darwin
+[debug] [2025-07-21T22:56:27.153Z] Node Version:  v18.18.2
+[debug] [2025-07-21T22:56:27.158Z] Time:          Mon Jul 21 2025 17:56:27 GMT-0500 (Central Daylight Time)
+[debug] [2025-07-21T22:56:27.158Z] ----------------------------------------------------------------------
+[debug] 
+[debug] [2025-07-21T22:56:27.161Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2025-07-21T22:56:27.161Z] > authorizing via signed-in user (nd@aply.com)
+[info] 
+     ######## #### ########  ######## ########     ###     ######  ########
+     ##        ##  ##     ## ##       ##     ##  ##   ##  ##       ##
+     ######    ##  ########  ######   ########  #########  ######  ######
+     ##        ##  ##    ##  ##       ##     ## ##     ##       ## ##
+     ##       #### ##     ## ######## ########  ##     ##  ######  ########
+
+You're about to initialize a Firebase project in this directory:
+
+  /Users/nick/Desktop/projects/teamfeed/aply-server
+

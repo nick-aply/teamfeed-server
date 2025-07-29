@@ -177,6 +177,55 @@ app.post('/verify-token', async (req, res) => {
   }
 });
 
+app.post('/notify-team-campaign', async (req, res) => {
+  const { uid, hook, idea, dueDate } = req.body;
+
+  if (!uid || !hook || !idea) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+
+  try {
+    const userSnap = await db.collection('creators').doc(uid).get();
+    const userData = userSnap.exists ? userSnap.data() : {};
+    const userName = userData.firstName || 'Unnamed';
+    const profilePic = userData.profilePic || '';
+const teamSnap = await db.collection('teamfeedteam').get();
+const teamEmails = teamSnap.docs
+  .map(doc => doc.data())
+  .filter(member => !!member.email)
+  .map(member => member.email);
+
+    const origin = req.headers.origin || '';
+    const baseUrl = origin.includes('localhost')
+      ? 'http://localhost:3031'
+      : 'https://teamfeed.co';
+
+    const html = `
+      <div style="font-family: Helvetica, sans-serif; background: #ffffff; padding: 30px; text-align: center;">
+        <img src="${profilePic}" alt="${userName}" style="width: 60px; height: 60px; border-radius: 50%; object-fit: cover; margin-bottom: 16px;" />
+        <h2 style="margin: 0 0 12px;">${userName} posted a new campaign on Teamfeed</h2>
+        <p style="font-size: 15px; margin: 0 0 6px;"><strong>Due:</strong> ${dueDate || 'Not specified'}</p>
+        <p style="font-size: 16px; margin: 12px 0;"><strong>${hook}</strong></p>
+        <p style="font-size: 14px; color: #444;">${idea}</p>
+        <a href="${baseUrl}/content" style="display: inline-block; margin-top: 24px; padding: 12px 24px; background-color: #000000; color: #ffffff; text-decoration: none; border-radius: 6px; font-weight: bold;">View Campaigns</a>
+      </div>
+    `;
+
+    const msgList = teamEmails.map(email => ({
+      to: email,
+      from: 'noreply@aply.com',
+      subject: 'New Marketing Campaign on Teamfeed',
+      html,
+    }));
+
+    await sgMail.send(msgList);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Notify Team Campaign Error:', err);
+    res.status(500).json({ error: 'Failed to send campaign email' });
+  }
+});
+
 // 💳 Stripe checkout session
 app.post('/create-checkout-session', async (req, res) => {
   try {

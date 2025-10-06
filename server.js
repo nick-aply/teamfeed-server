@@ -61,20 +61,21 @@ app.get('/', (req, res) => {
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const SENDGRID_API_KEY = process.env.SENDGRID_API_KEY;
 sgMail.setApiKey(SENDGRID_API_KEY);
-
 // 🔐 Create and send magic login link
 app.post('/create-magic-link', async (req, res) => {
-  const { email, brandFlow = false } = req.body;
+  const { email, brandFlow = false, segment = null } = req.body; // 👈 accept segment
   if (!email) return res.status(400).json({ error: 'Missing email' });
 
   try {
     const token = uuidv4();
     const createdAt = Date.now();
 
+    // 🔹 include segment in the magic link record
     await db.collection('magicLinks').doc(token).set({
       email,
       createdAt,
       brandFlow,
+      segment,
     });
 
     const origin = req.headers.origin || '';
@@ -84,7 +85,7 @@ app.post('/create-magic-link', async (req, res) => {
 
     const magicLink = `${baseUrl}?token=${token}`;
 
-   const htmlTemplate = `
+    const htmlTemplate = `
   <!DOCTYPE html>
   <html>
     <body style="margin: 0; padding: 40px; background-color: #ffffff; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #111111; text-align: center;">
@@ -101,6 +102,7 @@ app.post('/create-magic-link', async (req, res) => {
     </body>
   </html>
 `;
+
     const msg = {
       to: email,
       from: 'noreply@aply.com',
@@ -108,9 +110,10 @@ app.post('/create-magic-link', async (req, res) => {
       html: htmlTemplate,
       text: `Click to sign in: ${magicLink}`,
     };
-console.log('SENDGRID_API_KEY is:', process.env.SENDGRID_API_KEY?.slice(0, 5));
 
+    console.log('SENDGRID_API_KEY is:', process.env.SENDGRID_API_KEY?.slice(0, 5));
     await sgMail.send(msg);
+
     res.json({ success: true });
   } catch (err) {
     console.error('Create Magic Link Error:', err);
@@ -124,24 +127,26 @@ app.post('/verify-token', async (req, res) => {
   if (!token) return res.status(400).json({ error: 'Missing token' });
 
   try {
-    const tokenDoc = await db.collection('magicLinks').doc(token).get();
+    const tokenRef = db.collection('magicLinks').doc(token);
+    const tokenDoc = await tokenRef.get();
 
     if (!tokenDoc.exists) {
       return res.status(400).json({ error: 'Invalid or expired token' });
     }
 
-    const { email, createdAt, brandFlow = false } = tokenDoc.data();
+    const { email, createdAt, brandFlow = false, segment = null } = tokenDoc.data();
 
     const now = Date.now();
     const ageMinutes = (now - createdAt) / 60000;
-
     if (ageMinutes > 15) {
-      await db.collection('magicLinks').doc(token).delete();
+      await tokenRef.delete();
       return res.status(400).json({ error: 'Token expired' });
     }
 
-    await db.collection('magicLinks').doc(token).delete();
+    // one-time use
+    await tokenRef.delete();
 
+    // ensure Firebase Auth user exists
     let userRecord;
     try {
       userRecord = await admin.auth().getUserByEmail(email);
@@ -153,12 +158,14 @@ app.post('/verify-token', async (req, res) => {
       }
     }
 
+    // ensure creators/{uid} exists + persist segment
     const userRef = db.collection('creators').doc(userRecord.uid);
     await userRef.set(
       {
         email,
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
         brandFlow,
+        segment, // "internal" or "docusrch"
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
       },
       { merge: true }
     );
@@ -170,6 +177,7 @@ app.post('/verify-token', async (req, res) => {
       email,
       firebaseToken,
       brandFlow,
+      segment, // echo for frontend
     });
   } catch (err) {
     console.error('Verify Token Error:', err);
@@ -189,11 +197,12 @@ app.post('/notify-team-campaign', async (req, res) => {
     const userData = userSnap.exists ? userSnap.data() : {};
     const userName = userData.firstName || 'Unnamed';
     const profilePic = userData.profilePic || '';
-const teamSnap = await db.collection('teamfeedteam').get();
-const teamEmails = teamSnap.docs
-  .map(doc => doc.data())
-  .filter(member => !!member.email)
-  .map(member => member.email);
+
+    const teamSnap = await db.collection('teamfeedteam').get();
+    const teamEmails = teamSnap.docs
+        .map(doc => doc.data())
+        .filter(member => !!member.email)
+        .map(member => member.email);
 
     const origin = req.headers.origin || '';
     const baseUrl = origin.includes('localhost')

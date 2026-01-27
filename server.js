@@ -128,7 +128,8 @@ app.post('/verify-code', async (req, res) => {
   }
 
   try {
-    const codeSnap = await db.collection('magicCodes').doc(email).get();
+    const codeRef = db.collection('magicCodes').doc(email);
+    const codeSnap = await codeRef.get();
     if (!codeSnap.exists) {
       return res.status(400).json({ error: 'Code not found' });
     }
@@ -137,7 +138,7 @@ app.post('/verify-code', async (req, res) => {
     const ageMinutes = (Date.now() - createdAt) / 60000;
 
     if (ageMinutes > 15) {
-      await db.collection('magicCodes').doc(email).delete();
+      await codeRef.delete();
       return res.status(400).json({ error: 'Code expired' });
     }
 
@@ -145,34 +146,52 @@ app.post('/verify-code', async (req, res) => {
       return res.status(400).json({ error: 'Invalid code' });
     }
 
-    await db.collection('magicCodes').doc(email).delete();
+    await codeRef.delete();
 
     let userRecord;
+    let isNewUser = false;
+
     try {
       userRecord = await admin.auth().getUserByEmail(email);
     } catch (err) {
       if (err.code === 'auth/user-not-found') {
         userRecord = await admin.auth().createUser({ email });
+        isNewUser = true;
       } else {
         console.error('Auth error:', err);
         return res.status(500).json({ error: 'Firebase auth failure' });
       }
     }
 
-    const firebaseToken = await admin.auth().createCustomToken(userRecord.uid);
+    const uid = userRecord.uid;
+
+    // ✅ CREATE / UPDATE TEAMFEED USER DOC
+    await db.collection('tfUsers').doc(uid).set(
+      {
+        email,
+        uid,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        lastLoginAt: admin.firestore.FieldValue.serverTimestamp(),
+        onboarded: false,
+        teamIds: [],
+      },
+      { merge: true }
+    );
+
+    const firebaseToken = await admin.auth().createCustomToken(uid);
 
     return res.json({
       success: true,
-      uid: userRecord.uid,
+      uid,
       email,
       firebaseToken,
+      isNewUser,
     });
   } catch (err) {
     console.error('Verify Code Error:', err);
     return res.status(500).json({ error: 'Failed to verify code' });
   }
 });
-
 
 
 

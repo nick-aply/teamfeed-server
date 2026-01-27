@@ -61,6 +61,126 @@ app.get('/', (req, res) => {
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const SENDGRID_API_KEY = process.env.SENDGRID_API_KEY;
 sgMail.setApiKey(SENDGRID_API_KEY);
+
+
+
+// ===============================
+// TEAMFEED — SEND CODE
+// ===============================
+app.post('/send-code', async (req, res) => {
+  const { email } = req.body;
+  if (!email) return res.status(400).json({ error: 'Missing email' });
+
+  const code = Math.floor(100000 + Math.random() * 900000).toString();
+  const createdAt = Date.now();
+
+  try {
+    await db.collection('magicCodes').doc(email).set({ code, createdAt });
+
+    const origin = req.headers.origin || '';
+    const baseUrl = origin.includes('localhost')
+      ? 'http://localhost:3031'
+      : 'https://teamfeed.co';
+
+    const msg = {
+      to: email,
+      from: 'noreply@aply.com', // can change later, keeping simple for now
+      subject: 'Sign in to Teamfeed',
+      html: `
+        <!DOCTYPE html>
+        <html>
+          <body style="background-color: #ffffff; padding: 40px; font-family: -apple-system, BlinkMacSystemFont, Helvetica, Arial, sans-serif; color: #111;">
+            <div style="max-width: 480px; margin: auto; border: 1px solid #e5e5e5; padding: 32px; border-radius: 8px;">
+              <h2 style="margin-top: 0;">Your Teamfeed sign-in code</h2>
+              <p style="font-size: 16px;">Enter this code to continue:</p>
+              <div style="font-size: 32px; font-weight: 700; letter-spacing: 2px; margin: 24px 0;">
+                ${code}
+              </div>
+              <p style="font-size: 14px; color: #666;">
+                This code expires in 15 minutes.
+              </p>
+              <p style="font-size: 12px; color: #999; margin-top: 32px;">
+                Sent from ${baseUrl}
+              </p>
+            </div>
+          </body>
+        </html>
+      `,
+      text: `Your Teamfeed sign-in code is: ${code}`,
+    };
+
+    await sgMail.send(msg);
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('Send Code Error:', err);
+    return res.status(500).json({ error: 'Failed to send code' });
+  }
+});
+
+
+// ===============================
+// TEAMFEED — VERIFY CODE
+// ===============================
+app.post('/verify-code', async (req, res) => {
+  const { email, code } = req.body;
+  if (!email || !code) {
+    return res.status(400).json({ error: 'Missing email or code' });
+  }
+
+  try {
+    const codeSnap = await db.collection('magicCodes').doc(email).get();
+    if (!codeSnap.exists) {
+      return res.status(400).json({ error: 'Code not found' });
+    }
+
+    const { code: storedCode, createdAt } = codeSnap.data();
+    const ageMinutes = (Date.now() - createdAt) / 60000;
+
+    if (ageMinutes > 15) {
+      await db.collection('magicCodes').doc(email).delete();
+      return res.status(400).json({ error: 'Code expired' });
+    }
+
+    if (code !== storedCode) {
+      return res.status(400).json({ error: 'Invalid code' });
+    }
+
+    await db.collection('magicCodes').doc(email).delete();
+
+    let userRecord;
+    try {
+      userRecord = await admin.auth().getUserByEmail(email);
+    } catch (err) {
+      if (err.code === 'auth/user-not-found') {
+        userRecord = await admin.auth().createUser({ email });
+      } else {
+        console.error('Auth error:', err);
+        return res.status(500).json({ error: 'Firebase auth failure' });
+      }
+    }
+
+    const firebaseToken = await admin.auth().createCustomToken(userRecord.uid);
+
+    return res.json({
+      success: true,
+      uid: userRecord.uid,
+      email,
+      firebaseToken,
+    });
+  } catch (err) {
+    console.error('Verify Code Error:', err);
+    return res.status(500).json({ error: 'Failed to verify code' });
+  }
+});
+
+
+
+
+
+
+
+
+
 // 🔐 Create and send magic login link
 app.post('/create-magic-link', async (req, res) => {
   const { email, brandFlow = false, segment = null } = req.body; // 👈 accept segment

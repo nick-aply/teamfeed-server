@@ -158,22 +158,20 @@ app.post('/verify-code', async (req, res) => {
         userRecord = await admin.auth().createUser({ email });
         isNewUser = true;
       } else {
-        console.error('Auth error:', err);
-        return res.status(500).json({ error: 'Firebase auth failure' });
+        throw err;
       }
     }
 
     const uid = userRecord.uid;
 
-    // ✅ CREATE / UPDATE TEAMFEED USER DOC
     await db.collection('tfUsers').doc(uid).set(
       {
-        email,
         uid,
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        lastLoginAt: admin.firestore.FieldValue.serverTimestamp(),
+        email,
         onboarded: false,
         teamIds: [],
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        lastLoginAt: admin.firestore.FieldValue.serverTimestamp(),
       },
       { merge: true }
     );
@@ -188,7 +186,7 @@ app.post('/verify-code', async (req, res) => {
       isNewUser,
     });
   } catch (err) {
-    console.error('Verify Code Error:', err);
+    console.error(err);
     return res.status(500).json({ error: 'Failed to verify code' });
   }
 });

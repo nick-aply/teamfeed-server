@@ -15,11 +15,6 @@ const serviceAccount = {
   universe_domain: 'googleapis.com',
 };
 
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
-});
-
-
 // server.js
 import admin from 'firebase-admin';
 import cors from 'cors';
@@ -28,8 +23,9 @@ import dotenv from 'dotenv';
 import sgMail from '@sendgrid/mail';
 import { v4 as uuidv4 } from 'uuid';
 import { generateAlixResponse } from './AlixAIProfile.js';
-
+import cron from 'node-cron';
 import Stripe from 'stripe';
+
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 dotenv.config();
@@ -47,13 +43,11 @@ const port = 3001;
 app.use(cors());
 app.use(express.json());
 
-// ✅ Universal request logger
 app.use((req, res, next) => {
   console.log(`[${req.method}] ${req.url}`);
   next();
 });
 
-// ✅ Browser check route
 app.get('/', (req, res) => {
   res.send('✅ Teamfeed backend is live.');
 });
@@ -61,7 +55,6 @@ app.get('/', (req, res) => {
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const SENDGRID_API_KEY = process.env.SENDGRID_API_KEY;
 sgMail.setApiKey(SENDGRID_API_KEY);
-
 
 
 // ===============================
@@ -84,7 +77,7 @@ app.post('/send-code', async (req, res) => {
 
     const msg = {
       to: email,
-      from: 'noreply@aply.com', // can change later, keeping simple for now
+      from: 'noreply@aply.com',
       subject: 'Sign in to Teamfeed',
       html: `
         <!DOCTYPE html>
@@ -96,12 +89,8 @@ app.post('/send-code', async (req, res) => {
               <div style="font-size: 32px; font-weight: 700; letter-spacing: 2px; margin: 24px 0;">
                 ${code}
               </div>
-              <p style="font-size: 14px; color: #666;">
-                This code expires in 15 minutes.
-              </p>
-              <p style="font-size: 12px; color: #999; margin-top: 32px;">
-                Sent from ${baseUrl}
-              </p>
+              <p style="font-size: 14px; color: #666;">This code expires in 15 minutes.</p>
+              <p style="font-size: 12px; color: #999; margin-top: 32px;">Sent from ${baseUrl}</p>
             </div>
           </body>
         </html>
@@ -123,16 +112,12 @@ app.post('/send-code', async (req, res) => {
 // ===============================
 app.post('/verify-code', async (req, res) => {
   const { email, code } = req.body;
-  if (!email || !code) {
-    return res.status(400).json({ error: 'Missing email or code' });
-  }
+  if (!email || !code) return res.status(400).json({ error: 'Missing email or code' });
 
   try {
     const codeRef = db.collection('magicCodes').doc(email);
     const codeSnap = await codeRef.get();
-    if (!codeSnap.exists) {
-      return res.status(400).json({ error: 'Code not found' });
-    }
+    if (!codeSnap.exists) return res.status(400).json({ error: 'Code not found' });
 
     const { code: storedCode, createdAt } = codeSnap.data();
     const ageMinutes = (Date.now() - createdAt) / 60000;
@@ -142,9 +127,7 @@ app.post('/verify-code', async (req, res) => {
       return res.status(400).json({ error: 'Code expired' });
     }
 
-    if (code !== storedCode) {
-      return res.status(400).json({ error: 'Invalid code' });
-    }
+    if (code !== storedCode) return res.status(400).json({ error: 'Invalid code' });
 
     await codeRef.delete();
 
@@ -177,14 +160,7 @@ app.post('/verify-code', async (req, res) => {
     );
 
     const firebaseToken = await admin.auth().createCustomToken(uid);
-
-    return res.json({
-      success: true,
-      uid,
-      email,
-      firebaseToken,
-      isNewUser,
-    });
+    return res.json({ success: true, uid, email, firebaseToken, isNewUser });
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: 'Failed to verify code' });
@@ -192,53 +168,40 @@ app.post('/verify-code', async (req, res) => {
 });
 
 
-
-
-
-
-
-
-// 🔐 Create and send magic login link
+// ===============================
+// TEAMFEED — CREATE MAGIC LINK
+// ===============================
 app.post('/create-magic-link', async (req, res) => {
-  const { email, brandFlow = false, segment = null } = req.body; // 👈 accept segment
+  const { email, brandFlow = false, segment = null } = req.body;
   if (!email) return res.status(400).json({ error: 'Missing email' });
 
   try {
     const token = uuidv4();
     const createdAt = Date.now();
 
-    // 🔹 include segment in the magic link record
-    await db.collection('magicLinks').doc(token).set({
-      email,
-      createdAt,
-      brandFlow,
-      segment,
-    });
+    await db.collection('magicLinks').doc(token).set({ email, createdAt, brandFlow, segment });
 
     const origin = req.headers.origin || '';
-    const baseUrl = origin.includes('localhost')
-      ? 'http://localhost:3031'
-      : 'https://teamfeed.co';
-
+    const baseUrl = origin.includes('localhost') ? 'http://localhost:3031' : 'https://teamfeed.co';
     const magicLink = `${baseUrl}?token=${token}`;
 
     const htmlTemplate = `
-  <!DOCTYPE html>
-  <html>
-    <body style="margin: 0; padding: 40px; background-color: #ffffff; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #111111; text-align: center;">
-      <h2>Sign in to Teamfeed</h2>
-      <p>This one-time link is valid for the next <strong>15 minutes</strong>.</p>
-      <p>
-        <a href="${magicLink}" style="display: inline-block; margin: 20px 0; padding: 12px 24px; background-color: #111111; color: #ffffff; text-decoration: none; font-weight: bold; border-radius: 6px;">
-          Sign In
-        </a>
-      </p>
-      <p>If the button doesn't work, copy and paste this link into your browser:</p>
-      <p style="word-break: break-all; font-size: 14px;">${magicLink}</p>
-      <p style="margin-top: 40px; font-size: 12px; color: #888888;">© 2025 Teamfeed</p>
-    </body>
-  </html>
-`;
+      <!DOCTYPE html>
+      <html>
+        <body style="margin: 0; padding: 40px; background-color: #ffffff; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #111111; text-align: center;">
+          <h2>Sign in to Teamfeed</h2>
+          <p>This one-time link is valid for the next <strong>15 minutes</strong>.</p>
+          <p>
+            <a href="${magicLink}" style="display: inline-block; margin: 20px 0; padding: 12px 24px; background-color: #111111; color: #ffffff; text-decoration: none; font-weight: bold; border-radius: 6px;">
+              Sign In
+            </a>
+          </p>
+          <p>If the button doesn't work, copy and paste this link into your browser:</p>
+          <p style="word-break: break-all; font-size: 14px;">${magicLink}</p>
+          <p style="margin-top: 40px; font-size: 12px; color: #888888;">© 2025 Teamfeed</p>
+        </body>
+      </html>
+    `;
 
     const msg = {
       to: email,
@@ -250,7 +213,6 @@ app.post('/create-magic-link', async (req, res) => {
 
     console.log('SENDGRID_API_KEY is:', process.env.SENDGRID_API_KEY?.slice(0, 5));
     await sgMail.send(msg);
-
     res.json({ success: true });
   } catch (err) {
     console.error('Create Magic Link Error:', err);
@@ -258,7 +220,10 @@ app.post('/create-magic-link', async (req, res) => {
   }
 });
 
-// 🔓 Verify token and issue Firebase custom token
+
+// ===============================
+// TEAMFEED — VERIFY TOKEN
+// ===============================
 app.post('/verify-token', async (req, res) => {
   const { token } = req.body;
   if (!token) return res.status(400).json({ error: 'Missing token' });
@@ -267,23 +232,18 @@ app.post('/verify-token', async (req, res) => {
     const tokenRef = db.collection('magicLinks').doc(token);
     const tokenDoc = await tokenRef.get();
 
-    if (!tokenDoc.exists) {
-      return res.status(400).json({ error: 'Invalid or expired token' });
-    }
+    if (!tokenDoc.exists) return res.status(400).json({ error: 'Invalid or expired token' });
 
     const { email, createdAt, brandFlow = false, segment = null } = tokenDoc.data();
+    const ageMinutes = (Date.now() - createdAt) / 60000;
 
-    const now = Date.now();
-    const ageMinutes = (now - createdAt) / 60000;
     if (ageMinutes > 15) {
       await tokenRef.delete();
       return res.status(400).json({ error: 'Token expired' });
     }
 
-    // one-time use
     await tokenRef.delete();
 
-    // ensure Firebase Auth user exists
     let userRecord;
     try {
       userRecord = await admin.auth().getUserByEmail(email);
@@ -295,39 +255,27 @@ app.post('/verify-token', async (req, res) => {
       }
     }
 
-    // ensure creators/{uid} exists + persist segment
     const userRef = db.collection('creators').doc(userRecord.uid);
     await userRef.set(
-      {
-        email,
-        brandFlow,
-        segment, // "internal" or "docusrch"
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      },
+      { email, brandFlow, segment, createdAt: admin.firestore.FieldValue.serverTimestamp() },
       { merge: true }
     );
 
     const firebaseToken = await admin.auth().createCustomToken(userRecord.uid);
-
-    return res.json({
-      uid: userRecord.uid,
-      email,
-      firebaseToken,
-      brandFlow,
-      segment, // echo for frontend
-    });
+    return res.json({ uid: userRecord.uid, email, firebaseToken, brandFlow, segment });
   } catch (err) {
     console.error('Verify Token Error:', err);
     return res.status(500).json({ error: 'Failed to verify token' });
   }
 });
 
+
+// ===============================
+// TEAMFEED — NOTIFY TEAM CAMPAIGN
+// ===============================
 app.post('/notify-team-campaign', async (req, res) => {
   const { uid, hook, idea, dueDate } = req.body;
-
-  if (!uid || !hook || !idea) {
-    return res.status(400).json({ error: 'Missing required fields' });
-  }
+  if (!uid || !hook || !idea) return res.status(400).json({ error: 'Missing required fields' });
 
   try {
     const userSnap = await db.collection('creators').doc(uid).get();
@@ -337,14 +285,12 @@ app.post('/notify-team-campaign', async (req, res) => {
 
     const teamSnap = await db.collection('teamfeedteam').get();
     const teamEmails = teamSnap.docs
-        .map(doc => doc.data())
-        .filter(member => !!member.email)
-        .map(member => member.email);
+      .map(doc => doc.data())
+      .filter(member => !!member.email)
+      .map(member => member.email);
 
     const origin = req.headers.origin || '';
-    const baseUrl = origin.includes('localhost')
-      ? 'http://localhost:3031'
-      : 'https://teamfeed.co';
+    const baseUrl = origin.includes('localhost') ? 'http://localhost:3031' : 'https://teamfeed.co';
 
     const html = `
       <div style="font-family: Helvetica, sans-serif; background: #ffffff; padding: 30px; text-align: center;">
@@ -372,28 +318,22 @@ app.post('/notify-team-campaign', async (req, res) => {
   }
 });
 
-// 💳 Stripe checkout session
+
+// ===============================
+// STRIPE — CREATE CHECKOUT SESSION
+// ===============================
 app.post('/create-checkout-session', async (req, res) => {
   try {
     const origin = req.headers.origin || '';
-    const baseUrl = origin.includes('localhost')
-      ? 'http://localhost:3031'
-      : 'https://teamfeed.co';
+    const baseUrl = origin.includes('localhost') ? 'http://localhost:3031' : 'https://teamfeed.co';
 
     const session = await stripe.checkout.sessions.create({
       mode: 'subscription',
       payment_method_types: ['card', 'us_bank_account'],
       payment_method_options: {
-        us_bank_account: {
-          verification_method: 'automatic',
-        },
+        us_bank_account: { verification_method: 'automatic' },
       },
-      line_items: [
-        {
-          price: 'price_1RdQGVDjlFghA01sSq8lnWO6',
-          quantity: 1,
-        },
-      ],
+      line_items: [{ price: 'price_1RdQGVDjlFghA01sSq8lnWO6', quantity: 1 }],
       success_url: `${baseUrl}/feed`,
       cancel_url: `${baseUrl}/feed`,
     });
@@ -405,7 +345,10 @@ app.post('/create-checkout-session', async (req, res) => {
   }
 });
 
-// 🤖 Alix chat endpoint
+
+// ===============================
+// ALIX — AI CHAT ENDPOINT
+// ===============================
 app.post('/alix', async (req, res) => {
   const { phase, userInput, memory, followUpId } = req.body;
   const locationPath = req.headers.referer || req.path;
@@ -415,13 +358,7 @@ app.post('/alix', async (req, res) => {
   }
 
   try {
-    const aiData = await generateAlixResponse({
-      phase,
-      userInput,
-      memory,
-      locationPath,
-      followUpId,
-    });
+    const aiData = await generateAlixResponse({ phase, userInput, memory, locationPath, followUpId });
     return res.json(aiData);
   } catch (err) {
     console.error('Alix endpoint error:', err);
@@ -429,6 +366,214 @@ app.post('/alix', async (req, res) => {
   }
 });
 
+
+// ===============================
+// TEAMFEED — DAILY STANDUP CRON
+// Runs every weekday at 8am
+// ===============================
+cron.schedule('0 8 * * 1-5', async () => {
+  console.log('[CRON] Running daily standup...');
+  const today = new Date();
+  const todayStr = today.toISOString().split('T')[0];
+  const dayOfWeek = today.toLocaleDateString('en-US', { weekday: 'long' });
+
+  try {
+    const teamsSnap = await db.collection('tfTeams').get();
+
+    for (const teamDoc of teamsSnap.docs) {
+      const teamId = teamDoc.id;
+      const data = teamDoc.data();
+      const members = data.members || {};
+      const standupConfig = data.standupConfig || {};
+
+      for (const [userId, memberInfo] of Object.entries(members)) {
+        if (standupConfig[userId] === false) continue;
+        if (!memberInfo.approved || memberInfo.active === false) continue;
+
+        const scheduleId = `${teamId}_${userId}`;
+        const scheduleDoc = await db.collection('tfWorkSchedules').doc(scheduleId).get();
+
+        if (scheduleDoc.exists) {
+          const schedule = scheduleDoc.data();
+          const mondayStr = getMonday(today);
+          if (schedule.weekOf === mondayStr) {
+            if (!(schedule.days || []).includes(dayOfWeek)) continue;
+          }
+        }
+
+        const standupDoc = await db.collection('tfStandups').doc(scheduleId).get();
+        if (standupDoc.exists && standupDoc.data().lastPromptedDate === todayStr) continue;
+
+        await db.collection('tfNotifications').add({
+          teamId, userId, type: 'standup', read: false, date: todayStr,
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+
+        await db.collection('tfStandups').doc(scheduleId).set(
+          { teamId, userId, lastPromptedDate: todayStr },
+          { merge: true },
+        );
+
+        console.log(`[CRON] Standup notification created for ${userId}`);
+      }
+    }
+    console.log('[CRON] Daily standup complete.');
+  } catch (e) {
+    console.error('[CRON] Standup error:', e);
+  }
+});
+
+
+// ===============================
+// TEAMFEED — WEEKLY WORK SCHEDULE CRON
+// Runs every Monday at 7:45am
+// ===============================
+cron.schedule('45 7 * * 1', async () => {
+  console.log('[CRON] Running weekly work schedule prompt...');
+  const today = new Date();
+  const mondayStr = getMonday(today);
+
+  try {
+    const teamsSnap = await db.collection('tfTeams').get();
+
+    for (const teamDoc of teamsSnap.docs) {
+      const teamId = teamDoc.id;
+      const data = teamDoc.data();
+      const members = data.members || {};
+      const scheduleConfig = data.scheduleConfig || {};
+
+      for (const [userId, memberInfo] of Object.entries(members)) {
+        if (!scheduleConfig[userId]) continue;
+        if (!memberInfo.approved || memberInfo.active === false) continue;
+
+        const scheduleId = `${teamId}_${userId}`;
+        const scheduleDoc = await db.collection('tfWorkSchedules').doc(scheduleId).get();
+        if (scheduleDoc.exists && scheduleDoc.data().lastPromptedDate === mondayStr) continue;
+
+        await db.collection('tfNotifications').add({
+          teamId, userId, type: 'work_schedule', read: false, date: mondayStr,
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+
+        await db.collection('tfWorkSchedules').doc(scheduleId).set(
+          { teamId, userId, lastPromptedDate: mondayStr },
+          { merge: true },
+        );
+
+        console.log(`[CRON] Work schedule notification created for ${userId}`);
+      }
+    }
+    console.log('[CRON] Weekly work schedule complete.');
+  } catch (e) {
+    console.error('[CRON] Work schedule error:', e);
+  }
+});
+
+
+// ===============================
+// TEAMFEED — MANUAL CRON TRIGGERS
+// ===============================
+app.post('/crons/trigger-standup', async (req, res) => {
+  console.log('[MANUAL] Triggering standup cron...');
+  try {
+    const today = new Date();
+    const todayStr = today.toISOString().split('T')[0];
+    const teamsSnap = await db.collection('tfTeams').get();
+    let count = 0;
+
+    for (const teamDoc of teamsSnap.docs) {
+      const teamId = teamDoc.id;
+      const data = teamDoc.data();
+      const members = data.members || {};
+      const standupConfig = data.standupConfig || {};
+
+      for (const [userId, memberInfo] of Object.entries(members)) {
+        if (standupConfig[userId] === false) continue;
+        if (!memberInfo.approved || memberInfo.active === false) continue;
+
+        const standupId = `${teamId}_${userId}`;
+        const standupDoc = await db.collection('tfStandups').doc(standupId).get();
+        if (standupDoc.exists && standupDoc.data().lastPromptedDate === todayStr) continue;
+
+        await db.collection('tfNotifications').add({
+          teamId, userId, type: 'standup', read: false, date: todayStr,
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+
+        await db.collection('tfStandups').doc(standupId).set(
+          { teamId, userId, lastPromptedDate: todayStr },
+          { merge: true },
+        );
+
+        count++;
+      }
+    }
+
+    res.json({ success: true, notificationsCreated: count });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Failed to trigger standup cron' });
+  }
+});
+
+app.post('/crons/trigger-work-schedule', async (req, res) => {
+  console.log('[MANUAL] Triggering work schedule cron...');
+  try {
+    const mondayStr = getMonday(new Date());
+    const teamsSnap = await db.collection('tfTeams').get();
+    let count = 0;
+
+    for (const teamDoc of teamsSnap.docs) {
+      const teamId = teamDoc.id;
+      const data = teamDoc.data();
+      const members = data.members || {};
+      const scheduleConfig = data.scheduleConfig || {};
+
+      for (const [userId, memberInfo] of Object.entries(members)) {
+        if (!scheduleConfig[userId]) continue;
+        if (!memberInfo.approved || memberInfo.active === false) continue;
+
+        const scheduleId = `${teamId}_${userId}`;
+        const scheduleDoc = await db.collection('tfWorkSchedules').doc(scheduleId).get();
+        if (scheduleDoc.exists && scheduleDoc.data().lastPromptedDate === mondayStr) continue;
+
+        await db.collection('tfNotifications').add({
+          teamId, userId, type: 'work_schedule', read: false, date: mondayStr,
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+
+        await db.collection('tfWorkSchedules').doc(scheduleId).set(
+          { teamId, userId, lastPromptedDate: mondayStr },
+          { merge: true },
+        );
+
+        count++;
+      }
+    }
+
+    res.json({ success: true, notificationsCreated: count });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Failed to trigger work schedule cron' });
+  }
+});
+
+
+// ===============================
+// SHARED HELPERS
+// ===============================
+function getMonday(date) {
+  const d = new Date(date);
+  const day = d.getDay();
+  const diff = d.getDate() - day + (day === 0 ? -6 : 1);
+  d.setDate(diff);
+  return d.toISOString().split('T')[0];
+}
+
+
+// ===============================
+// START SERVER
+// ===============================
 app.listen(port, () => {
   console.log(`✅ Server running at http://localhost:${port}`);
 });

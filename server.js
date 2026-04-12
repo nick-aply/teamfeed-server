@@ -14,7 +14,6 @@ const serviceAccount = {
     'https://www.googleapis.com/robot/v1/metadata/x509/firebase-adminsdk-18dkb%40mrkt-2efde.iam.gserviceaccount.com',
   universe_domain: 'googleapis.com',
 };
-
 import admin from 'firebase-admin';
 import cors from 'cors';
 import express from 'express';
@@ -25,9 +24,13 @@ import { generateAlixResponse } from './AlixAIProfile.js';
 import cron from 'node-cron';
 import Stripe from 'stripe';
 
+dotenv.config();
+
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
-dotenv.config();
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+});
 
 const db = admin.firestore();
 const app = express();

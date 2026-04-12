@@ -15,7 +15,19 @@ const serviceAccount = {
   universe_domain: 'googleapis.com',
 };
 
+import admin from 'firebase-admin';
+import cors from 'cors';
+import express from 'express';
+import dotenv from 'dotenv';
+import sgMail from '@sendgrid/mail';
+import { v4 as uuidv4 } from 'uuid';
+import { generateAlixResponse } from './AlixAIProfile.js';
+import cron from 'node-cron';
+import Stripe from 'stripe';
 
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+
+dotenv.config();
 
 const db = admin.firestore();
 const app = express();

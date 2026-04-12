@@ -15,26 +15,7 @@ const serviceAccount = {
   universe_domain: 'googleapis.com',
 };
 
-// server.js
-import admin from 'firebase-admin';
-import cors from 'cors';
-import express from 'express';
-import dotenv from 'dotenv';
-import sgMail from '@sendgrid/mail';
-import { v4 as uuidv4 } from 'uuid';
-import { generateAlixResponse } from './AlixAIProfile.js';
-import cron from 'node-cron';
-import Stripe from 'stripe';
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
-
-dotenv.config();
-
-if (!admin.apps.length) {
-  admin.initializeApp({
-    credential: admin.credential.applicationDefault(),
-  });
-}
 
 const db = admin.firestore();
 const app = express();
@@ -369,7 +350,7 @@ app.post('/alix', async (req, res) => {
 
 // ===============================
 // TEAMFEED — DAILY STANDUP CRON
-// Runs every weekday at 8am
+// Runs every weekday at 8am ET
 // ===============================
 cron.schedule('0 8 * * 1-5', async () => {
   console.log('[CRON] Running daily standup...');
@@ -421,12 +402,12 @@ cron.schedule('0 8 * * 1-5', async () => {
   } catch (e) {
     console.error('[CRON] Standup error:', e);
   }
-});
+}, { timezone: 'America/New_York' });
 
 
 // ===============================
 // TEAMFEED — WEEKLY WORK SCHEDULE CRON
-// Runs every Monday at 7:45am
+// Runs every Monday at 7:45am ET
 // ===============================
 cron.schedule('45 7 * * 1', async () => {
   console.log('[CRON] Running weekly work schedule prompt...');
@@ -467,7 +448,7 @@ cron.schedule('45 7 * * 1', async () => {
   } catch (e) {
     console.error('[CRON] Work schedule error:', e);
   }
-});
+}, { timezone: 'America/New_York' });
 
 
 // ===============================
@@ -569,7 +550,7 @@ function getMonday(date) {
   d.setDate(diff);
   return d.toISOString().split('T')[0];
 }
- //cmon one more time
+
 
 // ===============================
 // START SERVER

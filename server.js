@@ -14,6 +14,7 @@ const serviceAccount = {
     'https://www.googleapis.com/robot/v1/metadata/x509/firebase-adminsdk-18dkb%40mrkt-2efde.iam.gserviceaccount.com',
   universe_domain: 'googleapis.com',
 };
+
 import admin from 'firebase-admin';
 import cors from 'cors';
 import express from 'express';
@@ -370,7 +371,7 @@ app.post('/alix', async (req, res) => {
 cron.schedule('0 8 * * 1-5', async () => {
   console.log('[CRON] Running daily standup...');
   const today = new Date();
-  const todayStr = today.toISOString().split('T')[0];
+  const todayStr = localDateStr(today);
   const dayOfWeek = today.toLocaleDateString('en-US', { weekday: 'long' });
 
   try {
@@ -473,7 +474,7 @@ app.post('/crons/trigger-standup', async (req, res) => {
   console.log('[MANUAL] Triggering standup cron...');
   try {
     const today = new Date();
-    const todayStr = today.toISOString().split('T')[0];
+    const todayStr = localDateStr(today);
     const teamsSnap = await db.collection('tfTeams').get();
     let count = 0;
 
@@ -558,17 +559,22 @@ app.post('/crons/trigger-work-schedule', async (req, res) => {
 // ===============================
 // SHARED HELPERS
 // ===============================
+function localDateStr(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 function getMonday(date) {
   const d = new Date(date);
   const day = d.getDay();
   if (day === 0) {
-    // Sunday — push forward to tomorrow (Monday)
     d.setDate(d.getDate() + 1);
   } else {
-    // Any other day — go back to Monday of current week
     d.setDate(d.getDate() - day + 1);
   }
-  return d.toISOString().split('T')[0];
+  return localDateStr(d);
 }
 
 

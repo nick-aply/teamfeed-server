@@ -561,7 +561,8 @@ app.post('/crons/trigger-work-schedule', async (req, res) => {
 function getMonday(date) {
   const d = new Date(date);
   const day = d.getDay();
-  const diff = d.getDate() - day + (day === 0 ? -6 : 1);
+  // If Sunday (0), push forward to next Monday
+  const diff = day === 0 ? 1 : d.getDate() - day + 1;
   d.setDate(diff);
   return d.toISOString().split('T')[0];
 }

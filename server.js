@@ -577,7 +577,110 @@ function getMonday(date) {
   return localDateStr(d);
 }
 
+// ===============================
+// TEAMFEED — DAILY PULSE CRON
+// Runs every day at 8am ET
+// ===============================
+cron.schedule('0 8 * * *', async () => {
+  console.log('[CRON] Running daily pulse...');
+  const today = new Date();
+  const todayStr = localDateStr(today);
 
+  try {
+    const teamsSnap = await db.collection('tfTeams').get();
+
+    for (const teamDoc of teamsSnap.docs) {
+      const teamId = teamDoc.id;
+      const data = teamDoc.data();
+      const pulseCategories = data.pulseCategories || [];
+
+      for (const category of pulseCategories) {
+        if (!category.isActive) continue;
+
+        for (const userId of (category.assignedIds || [])) {
+          const members = data.members || {};
+          const memberInfo = members[userId];
+          if (!memberInfo?.approved || memberInfo?.active === false) continue;
+
+          // Skip if already prompted today
+          const notifId = `${teamId}_${category.id}_${userId}_${todayStr}`;
+          const existing = await db.collection('tfNotifications').doc(notifId).get();
+          if (existing.exists) continue;
+
+          await db.collection('tfNotifications').doc(notifId).set({
+            teamId,
+            userId,
+            type: 'pulse',
+            categoryId: category.id,
+            categoryName: category.name,
+            categoryDescription: category.description,
+            read: false,
+            date: todayStr,
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+
+          console.log(`[CRON] Pulse notification created for ${userId} — ${category.name}`);
+        }
+      }
+    }
+    console.log('[CRON] Daily pulse complete.');
+  } catch (e) {
+    console.error('[CRON] Pulse error:', e);
+  }
+}, { timezone: 'America/New_York' });
+
+
+// ===============================
+// TEAMFEED — MANUAL PULSE TRIGGER
+// ===============================
+app.post('/crons/trigger-pulse', async (req, res) => {
+  console.log('[MANUAL] Triggering pulse cron...');
+  try {
+    const today = new Date();
+    const todayStr = localDateStr(today);
+    const teamsSnap = await db.collection('tfTeams').get();
+    let count = 0;
+
+    for (const teamDoc of teamsSnap.docs) {
+      const teamId = teamDoc.id;
+      const data = teamDoc.data();
+      const pulseCategories = data.pulseCategories || [];
+
+      for (const category of pulseCategories) {
+        if (!category.isActive) continue;
+
+        for (const userId of (category.assignedIds || [])) {
+          const members = data.members || {};
+          const memberInfo = members[userId];
+          if (!memberInfo?.approved || memberInfo?.active === false) continue;
+
+          const notifId = `${teamId}_${category.id}_${userId}_${todayStr}`;
+          const existing = await db.collection('tfNotifications').doc(notifId).get();
+          if (existing.exists) continue;
+
+          await db.collection('tfNotifications').doc(notifId).set({
+            teamId,
+            userId,
+            type: 'pulse',
+            categoryId: category.id,
+            categoryName: category.name,
+            categoryDescription: category.description,
+            read: false,
+            date: todayStr,
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+
+          count++;
+        }
+      }
+    }
+
+    res.json({ success: true, notificationsCreated: count });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Failed to trigger pulse cron' });
+  }
+});
 // ===============================
 // START SERVER
 // ===============================

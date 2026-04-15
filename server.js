@@ -681,6 +681,41 @@ app.post('/crons/trigger-pulse', async (req, res) => {
     res.status(500).json({ error: 'Failed to trigger pulse cron' });
   }
 });
+
+
+app.post('/notify/dm', async (req, res) => {
+  const { recipientId, senderName, message } = req.body;
+  try {
+    const userDoc = await db.collection('tfUsers').doc(recipientId).get();
+    if (!userDoc.exists) return res.status(404).json({ error: 'User not found' });
+    
+    const fcmToken = userDoc.data().fcmToken;
+    if (!fcmToken) return res.json({ success: false, reason: 'No token' });
+
+    await admin.messaging().send({
+      token: fcmToken,
+      notification: {
+        title: senderName,
+        body: message.length > 100 ? message.substring(0, 97) + '...' : message,
+      },
+      apns: {
+        payload: {
+          aps: {
+            sound: 'default',
+            badge: 1,
+          },
+        },
+      },
+    });
+
+    res.json({ success: true });
+  } catch (e) {
+    console.error('[notify/dm]', e);
+    res.status(500).json({ error: 'Failed to send notification' });
+  }
+});
+
+
 // ===============================
 // START SERVER
 // ===============================

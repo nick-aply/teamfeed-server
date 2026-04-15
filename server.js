@@ -401,6 +401,17 @@ cron.schedule('0 8 * * 1-5', async () => {
         const standupDoc = await db.collection('tfStandups').doc(scheduleId).get();
         if (standupDoc.exists && standupDoc.data().lastPromptedDate === todayStr) continue;
 
+        // Delete any existing unread standup for this user
+        const existingSnap = await db.collection('tfNotifications')
+          .where('userId', '==', userId)
+          .where('teamId', '==', teamId)
+          .where('type', '==', 'standup')
+          .where('read', '==', false)
+          .get();
+        const batch = db.batch();
+        existingSnap.docs.forEach(d => batch.delete(d.ref));
+        await batch.commit();
+
         await db.collection('tfNotifications').add({
           teamId, userId, type: 'standup', read: false, date: todayStr,
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -410,6 +421,20 @@ cron.schedule('0 8 * * 1-5', async () => {
           { teamId, userId, lastPromptedDate: todayStr },
           { merge: true },
         );
+
+        try {
+          const userDoc = await db.collection('tfUsers').doc(userId).get();
+          const fcmToken = userDoc.data()?.fcmToken;
+          if (fcmToken) {
+            await admin.messaging().send({
+              token: fcmToken,
+              notification: { title: '🎙️ Daily Standup', body: 'What are you working on today?' },
+              apns: { payload: { aps: { sound: 'default', badge: 1 } } },
+            });
+          }
+        } catch (e) {
+          console.log(`[CRON] Standup FCM failed for ${userId}:`, e.message);
+        }
 
         console.log(`[CRON] Standup notification created for ${userId}`);
       }
@@ -447,6 +472,17 @@ cron.schedule('45 7 * * 1', async () => {
         const scheduleDoc = await db.collection('tfWorkSchedules').doc(scheduleId).get();
         if (scheduleDoc.exists && scheduleDoc.data().lastPromptedDate === mondayStr) continue;
 
+        // Delete any existing unread work_schedule for this user
+        const existingSnap = await db.collection('tfNotifications')
+          .where('userId', '==', userId)
+          .where('teamId', '==', teamId)
+          .where('type', '==', 'work_schedule')
+          .where('read', '==', false)
+          .get();
+        const batch = db.batch();
+        existingSnap.docs.forEach(d => batch.delete(d.ref));
+        await batch.commit();
+
         await db.collection('tfNotifications').add({
           teamId, userId, type: 'work_schedule', read: false, date: mondayStr,
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -456,6 +492,20 @@ cron.schedule('45 7 * * 1', async () => {
           { teamId, userId, lastPromptedDate: mondayStr },
           { merge: true },
         );
+
+        try {
+          const userDoc = await db.collection('tfUsers').doc(userId).get();
+          const fcmToken = userDoc.data()?.fcmToken;
+          if (fcmToken) {
+            await admin.messaging().send({
+              token: fcmToken,
+              notification: { title: '📅 Work Schedule', body: 'Log your hours for this week.' },
+              apns: { payload: { aps: { sound: 'default', badge: 1 } } },
+            });
+          }
+        } catch (e) {
+          console.log(`[CRON] Work schedule FCM failed for ${userId}:`, e.message);
+        }
 
         console.log(`[CRON] Work schedule notification created for ${userId}`);
       }
@@ -492,6 +542,17 @@ app.post('/crons/trigger-standup', async (req, res) => {
         const standupDoc = await db.collection('tfStandups').doc(standupId).get();
         if (standupDoc.exists && standupDoc.data().lastPromptedDate === todayStr) continue;
 
+        // Delete any existing unread standup for this user
+        const existingSnap = await db.collection('tfNotifications')
+          .where('userId', '==', userId)
+          .where('teamId', '==', teamId)
+          .where('type', '==', 'standup')
+          .where('read', '==', false)
+          .get();
+        const batch = db.batch();
+        existingSnap.docs.forEach(d => batch.delete(d.ref));
+        await batch.commit();
+
         await db.collection('tfNotifications').add({
           teamId, userId, type: 'standup', read: false, date: todayStr,
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -501,6 +562,20 @@ app.post('/crons/trigger-standup', async (req, res) => {
           { teamId, userId, lastPromptedDate: todayStr },
           { merge: true },
         );
+
+        try {
+          const userDoc = await db.collection('tfUsers').doc(userId).get();
+          const fcmToken = userDoc.data()?.fcmToken;
+          if (fcmToken) {
+            await admin.messaging().send({
+              token: fcmToken,
+              notification: { title: '🎙️ Daily Standup', body: 'What are you working on today?' },
+              apns: { payload: { aps: { sound: 'default', badge: 1 } } },
+            });
+          }
+        } catch (e) {
+          console.log(`[MANUAL] Standup FCM failed for ${userId}:`, e.message);
+        }
 
         count++;
       }
@@ -534,6 +609,17 @@ app.post('/crons/trigger-work-schedule', async (req, res) => {
         const scheduleDoc = await db.collection('tfWorkSchedules').doc(scheduleId).get();
         if (scheduleDoc.exists && scheduleDoc.data().lastPromptedDate === mondayStr) continue;
 
+        // Delete any existing unread work_schedule for this user
+        const existingSnap = await db.collection('tfNotifications')
+          .where('userId', '==', userId)
+          .where('teamId', '==', teamId)
+          .where('type', '==', 'work_schedule')
+          .where('read', '==', false)
+          .get();
+        const batch = db.batch();
+        existingSnap.docs.forEach(d => batch.delete(d.ref));
+        await batch.commit();
+
         await db.collection('tfNotifications').add({
           teamId, userId, type: 'work_schedule', read: false, date: mondayStr,
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -543,6 +629,20 @@ app.post('/crons/trigger-work-schedule', async (req, res) => {
           { teamId, userId, lastPromptedDate: mondayStr },
           { merge: true },
         );
+
+        try {
+          const userDoc = await db.collection('tfUsers').doc(userId).get();
+          const fcmToken = userDoc.data()?.fcmToken;
+          if (fcmToken) {
+            await admin.messaging().send({
+              token: fcmToken,
+              notification: { title: '📅 Work Schedule', body: 'Log your hours for this week.' },
+              apns: { payload: { aps: { sound: 'default', badge: 1 } } },
+            });
+          }
+        } catch (e) {
+          console.log(`[MANUAL] Work schedule FCM failed for ${userId}:`, e.message);
+        }
 
         count++;
       }
@@ -577,6 +677,7 @@ function getMonday(date) {
   return localDateStr(d);
 }
 
+
 // ===============================
 // TEAMFEED — DAILY PULSE CRON
 // Runs every day at 8am ET
@@ -602,22 +703,47 @@ cron.schedule('0 8 * * *', async () => {
           const memberInfo = members[userId];
           if (!memberInfo?.approved || memberInfo?.active === false) continue;
 
-          // Skip if already prompted today
           const notifId = `${teamId}_${category.id}_${userId}_${todayStr}`;
           const existing = await db.collection('tfNotifications').doc(notifId).get();
           if (existing.exists) continue;
 
+          // Delete any existing unread pulse for this user + category
+          const existingSnap = await db.collection('tfNotifications')
+            .where('userId', '==', userId)
+            .where('teamId', '==', teamId)
+            .where('type', '==', 'pulse')
+            .where('categoryId', '==', category.id)
+            .where('read', '==', false)
+            .get();
+          const batch = db.batch();
+          existingSnap.docs.forEach(d => batch.delete(d.ref));
+          await batch.commit();
+
           await db.collection('tfNotifications').doc(notifId).set({
-            teamId,
-            userId,
-            type: 'pulse',
+            teamId, userId, type: 'pulse',
             categoryId: category.id,
             categoryName: category.name,
             categoryDescription: category.description,
-            read: false,
-            date: todayStr,
+            read: false, date: todayStr,
             createdAt: admin.firestore.FieldValue.serverTimestamp(),
           });
+
+          try {
+            const userDoc = await db.collection('tfUsers').doc(userId).get();
+            const fcmToken = userDoc.data()?.fcmToken;
+            if (fcmToken) {
+              await admin.messaging().send({
+                token: fcmToken,
+                notification: {
+                  title: `📊 ${category.name}`,
+                  body: category.description || 'Fill out your daily update.',
+                },
+                apns: { payload: { aps: { sound: 'default', badge: 1 } } },
+              });
+            }
+          } catch (e) {
+            console.log(`[CRON] Pulse FCM failed for ${userId}:`, e.message);
+          }
 
           console.log(`[CRON] Pulse notification created for ${userId} — ${category.name}`);
         }
@@ -658,17 +784,43 @@ app.post('/crons/trigger-pulse', async (req, res) => {
           const existing = await db.collection('tfNotifications').doc(notifId).get();
           if (existing.exists) continue;
 
+          // Delete any existing unread pulse for this user + category
+          const existingSnap = await db.collection('tfNotifications')
+            .where('userId', '==', userId)
+            .where('teamId', '==', teamId)
+            .where('type', '==', 'pulse')
+            .where('categoryId', '==', category.id)
+            .where('read', '==', false)
+            .get();
+          const batch = db.batch();
+          existingSnap.docs.forEach(d => batch.delete(d.ref));
+          await batch.commit();
+
           await db.collection('tfNotifications').doc(notifId).set({
-            teamId,
-            userId,
-            type: 'pulse',
+            teamId, userId, type: 'pulse',
             categoryId: category.id,
             categoryName: category.name,
             categoryDescription: category.description,
-            read: false,
-            date: todayStr,
+            read: false, date: todayStr,
             createdAt: admin.firestore.FieldValue.serverTimestamp(),
           });
+
+          try {
+            const userDoc = await db.collection('tfUsers').doc(userId).get();
+            const fcmToken = userDoc.data()?.fcmToken;
+            if (fcmToken) {
+              await admin.messaging().send({
+                token: fcmToken,
+                notification: {
+                  title: `📊 ${category.name}`,
+                  body: category.description || 'Fill out your daily update.',
+                },
+                apns: { payload: { aps: { sound: 'default', badge: 1 } } },
+              });
+            }
+          } catch (e) {
+            console.log(`[MANUAL] Pulse FCM failed for ${userId}:`, e.message);
+          }
 
           count++;
         }
@@ -681,7 +833,6 @@ app.post('/crons/trigger-pulse', async (req, res) => {
     res.status(500).json({ error: 'Failed to trigger pulse cron' });
   }
 });
-
 
 app.post('/notify/dm', async (req, res) => {
   const { recipientId, senderName, message } = req.body;

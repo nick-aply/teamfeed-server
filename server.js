@@ -24,16 +24,25 @@ import { v4 as uuidv4 } from 'uuid';
 import { generateAlixResponse } from './AlixAIProfile.js';
 import cron from 'node-cron';
 import Stripe from 'stripe';
+import crypto from 'crypto';
 
 dotenv.config();
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
+// Storage bucket — falls back to the project's default appspot bucket.
+const STORAGE_BUCKET =
+  process.env.VITE_FIREBASE_STORAGE_BUCKET ||
+  process.env.FIREBASE_STORAGE_BUCKET ||
+  'mrkt-2efde.appspot.com';
+
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
+  storageBucket: STORAGE_BUCKET,
 });
 
 const db = admin.firestore();
+const bucket = admin.storage().bucket();
 const app = express();
 const port = 3001;
 
@@ -863,6 +872,101 @@ app.post('/notify/dm', async (req, res) => {
   } catch (e) {
     console.error('[notify/dm]', e);
     res.status(500).json({ error: 'Failed to send notification' });
+  }
+});
+
+
+// ===============================
+// COMPANY IMAGE — UPLOAD FROM URL
+// ===============================
+// VA pastes an arbitrary image URL → server fetches it (avoids browser CORS),
+// uploads to Firebase Storage via Admin SDK, optionally updates the Brand doc,
+// and returns the permanent firebasestorage.googleapis.com download URL.
+//
+// Body: { imageUrl: string, brandId: string, kind?: 'logo' | 'background' }
+// kind defaults to 'logo'. When kind is provided, the matching field on the
+// Brand doc (logo | backgroundImage) is updated server-side.
+app.post('/upload-logo-from-url', async (req, res) => {
+  const { imageUrl, brandId, kind = 'logo' } = req.body || {};
+
+  if (!imageUrl || typeof imageUrl !== 'string' || !imageUrl.trim()) {
+    return res.status(400).json({ error: 'Missing imageUrl' });
+  }
+  if (!brandId || typeof brandId !== 'string' || !brandId.trim()) {
+    return res.status(400).json({ error: 'Missing brandId' });
+  }
+  if (!['logo', 'background'].includes(kind)) {
+    return res.status(400).json({ error: 'kind must be "logo" or "background"' });
+  }
+
+  try {
+    // Server-side fetch — no CORS constraints. Follow redirects (default fetch).
+    const fetchRes = await fetch(imageUrl);
+    if (!fetchRes.ok) {
+      return res.status(502).json({
+        error: `Source URL returned ${fetchRes.status}`,
+        status: fetchRes.status,
+      });
+    }
+
+    const contentType = fetchRes.headers.get('content-type') || 'application/octet-stream';
+    if (!contentType.startsWith('image/')) {
+      return res.status(415).json({
+        error: `Source URL did not return an image (content-type: ${contentType})`,
+      });
+    }
+
+    const arrayBuffer = await fetchRes.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+
+    // 5MB cap — enough for logos and reasonable backgrounds.
+    if (buffer.length > 5 * 1024 * 1024) {
+      return res.status(413).json({
+        error: `Image too large (${buffer.length} bytes, max 5MB)`,
+      });
+    }
+
+    const ext = (contentType.split('/')[1] || 'jpg').split(';')[0];
+    const folder = kind === 'background' ? 'brandBackgrounds' : 'brandLogos';
+    const path = `${folder}/${brandId}_${Date.now()}.${ext}`;
+
+    // Token-based public download URL — matches what the client SDK's
+    // getDownloadURL produces, so existing readers don't care which source
+    // wrote the file.
+    const downloadToken = crypto.randomUUID();
+    const file = bucket.file(path);
+    await file.save(buffer, {
+      contentType,
+      metadata: {
+        metadata: {
+          firebaseStorageDownloadTokens: downloadToken,
+          uploadedBy: 'aply-server/upload-logo-from-url',
+          sourceUrl: imageUrl,
+        },
+      },
+    });
+
+    const url = `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encodeURIComponent(
+      path
+    )}?alt=media&token=${downloadToken}`;
+
+    // Update brand doc unless caller opts out (via kind).
+    const fieldName = kind === 'background' ? 'backgroundImage' : 'logo';
+    await db
+      .collection('Brands')
+      .doc(brandId)
+      .set(
+        {
+          [fieldName]: url,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+
+    return res.json({ success: true, url, path, kind });
+  } catch (e) {
+    console.error('[upload-logo-from-url]', e);
+    return res.status(500).json({ error: 'Upload failed', details: e.message });
   }
 });
 

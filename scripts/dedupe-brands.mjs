@@ -6,17 +6,24 @@
 //     perks, description, hireFields)
 //   - Final tiebreak: oldest createdAt
 //
-// Safety: if a non-keeper duplicate ALSO has decisionMakers, the group is
-// skipped and logged for manual review — we never destroy lead data.
+// Safety: by default, if a non-keeper duplicate ALSO has decisionMakers, the
+// group is skipped and logged for manual review — we never destroy lead data.
+//
+// With --merge-dms, those skip groups become merges: each loser DM is copied
+// onto the keeper (dedup by email if present, else lowercase trimmed name).
+// Already-present DMs are skipped silently.
 //
 // For each merged group:
+//   - Copy DMs from losers to keeper if --merge-dms (dedup as above)
 //   - Find Pipelines referencing the loser's ID and rewrite brandIds to the
 //     keeper's ID (deduped so we don't end up with the keeper listed twice).
 //   - Delete loser docs (and any stray subcollection docs).
 //
 // Usage:
-//   node scripts/dedupe-brands.mjs              # dry run, no writes
-//   node scripts/dedupe-brands.mjs --execute    # actually run the merges
+//   node scripts/dedupe-brands.mjs                          # dry run
+//   node scripts/dedupe-brands.mjs --execute                # safe merges only
+//   node scripts/dedupe-brands.mjs --merge-dms              # dry run incl. DM merges
+//   node scripts/dedupe-brands.mjs --merge-dms --execute    # all merges, DM consolidation on
 
 import admin from 'firebase-admin';
 import fs from 'node:fs';
@@ -41,7 +48,17 @@ admin.initializeApp({
 const db = admin.firestore();
 
 const EXECUTE = process.argv.includes('--execute');
+const MERGE_DMS = process.argv.includes('--merge-dms');
 const log = (...args) => console.log(...args);
+
+// Match key for DM dedup: email-first (most reliable), then name.
+function dmKey(data) {
+  const email = (data.email || '').trim().toLowerCase();
+  if (email) return `email:${email}`;
+  const name = (data.name || '').trim().toLowerCase();
+  if (name) return `name:${name}`;
+  return null; // skip blank-name DMs (shouldn't exist but defensive)
+}
 
 function fillScore(data) {
   // Rough "completeness" score for tiebreaks. Each filled field = 1 point.
@@ -127,6 +144,7 @@ async function main() {
   let skippedCount = 0;
   let deletedCount = 0;
   let pipelinesPatched = 0;
+  let dmsCopied = 0;
   const skips = [];
 
   for (const [key, group] of dupGroups) {
@@ -147,8 +165,9 @@ async function main() {
     const [keeper, ...losers] = enriched;
     const losersWithDms = losers.filter((l) => l.dmCount > 0);
 
-    if (losersWithDms.length > 0) {
-      // Multiple duplicates have leads — refuse to auto-merge.
+    if (losersWithDms.length > 0 && !MERGE_DMS) {
+      // Multiple duplicates have leads — refuse to auto-merge unless
+      // --merge-dms was passed.
       log(
         `\n[SKIP] "${keeper.name}" — keeper ${keeper.id} (${keeper.dmCount} DMs), but ${losersWithDms.length} other dup${
           losersWithDms.length === 1 ? '' : 's'
@@ -165,6 +184,55 @@ async function main() {
       `\n[MERGE] "${keeper.name}" — keep ${keeper.id} (${keeper.dmCount} DMs, fill=${keeper._fill}); drop ${losers.length}:`
     );
     losers.forEach((l) => log(`         drop ${l.id} (DMs=${l.dmCount}, fill=${l._fill})`));
+
+    // DM consolidation step (only fires when --merge-dms AND a loser has DMs).
+    // Build keeper's existing DM keys, then copy any non-duplicate loser DMs.
+    let dmsCopiedThisGroup = 0;
+    let dmDupesSkippedThisGroup = 0;
+    if (MERGE_DMS && losersWithDms.length > 0) {
+      const keeperRef = db.collection('Brands').doc(keeper.id);
+      const keeperDms = await keeperRef.collection('decisionMakers').get();
+      const keeperKeys = new Set();
+      keeperDms.docs.forEach((d) => {
+        const k = dmKey(d.data());
+        if (k) keeperKeys.add(k);
+      });
+
+      for (const loser of losersWithDms) {
+        const loserDms = await db
+          .collection('Brands')
+          .doc(loser.id)
+          .collection('decisionMakers')
+          .get();
+        for (const ldoc of loserDms.docs) {
+          const ldata = ldoc.data();
+          const k = dmKey(ldata);
+          if (!k) continue;
+          if (keeperKeys.has(k)) {
+            dmDupesSkippedThisGroup += 1;
+            continue;
+          }
+          if (EXECUTE) {
+            // Strip the createdAt server timestamp ref (it's a sentinel object,
+            // can't be re-saved). Replace with a fresh one.
+            const { createdAt, updatedAt, ...rest } = ldata;
+            await keeperRef.collection('decisionMakers').add({
+              ...rest,
+              createdAt: admin.firestore.FieldValue.serverTimestamp(),
+              mergedFrom: loser.id,
+            });
+          }
+          keeperKeys.add(k);
+          dmsCopiedThisGroup += 1;
+        }
+      }
+      if (dmsCopiedThisGroup > 0 || dmDupesSkippedThisGroup > 0) {
+        log(
+          `         DMs: ${dmsCopiedThisGroup} copied to keeper, ${dmDupesSkippedThisGroup} skipped as duplicates`
+        );
+      }
+      dmsCopied += dmsCopiedThisGroup;
+    }
 
     // Find pipeline references on losers. Patch them to point to the keeper.
     const pipelineUpdates = new Map(); // pipelineId → new brandIds (deduped)
@@ -215,6 +283,9 @@ async function main() {
   log(`Groups skipped:    ${skippedCount}`);
   log(`Brands deleted:    ${deletedCount}${EXECUTE ? '' : ' (dry run — no writes)'}`);
   log(`Pipelines patched: ${pipelinesPatched}${EXECUTE ? '' : ' (dry run — no writes)'}`);
+  if (MERGE_DMS) {
+    log(`DMs migrated:      ${dmsCopied}${EXECUTE ? '' : ' (dry run — no writes)'}`);
+  }
   if (skips.length > 0) {
     log(`\nGroups requiring manual review (multiple dups have DMs):`);
     skips.forEach((s) =>

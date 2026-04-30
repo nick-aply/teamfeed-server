@@ -1,0 +1,26 @@
+[
+  {
+    "slug": "social-content-ugc-fall-2026",
+    "stripTitle": "Social Media — Content & UGC",
+    "subtext": "Create scroll-stopping content for the brands students wear, eat, and post about.",
+    "backgroundImage": "",
+    "perks": ["Direct content briefs", "Free product", "Portfolio-quality shoots"],
+    "pipelineStatus": "active",
+    "published": false,
+    "tags": ["ugc", "content", "fall"],
+    "templateNames": ["Standard creator basics"],
+    "brandNames": ["Bolt Boutique", "Dove", "The Inkey List"]
+  },
+  {
+    "slug": "sales-bizdev-spring-2026",
+    "stripTitle": "Sales & Business Development",
+    "subtext": "Pitch real businesses, learn enterprise sales fundamentals.",
+    "backgroundImage": "",
+    "perks": ["1:1 mentor coaching", "Live deal exposure"],
+    "pipelineStatus": "active",
+    "published": false,
+    "tags": ["sales", "spring"],
+    "templateNames": ["Sales pitch portfolio"],
+    "brandNames": ["Stripe", "Notion", "Linear", "Ramp"]
+  }
+]

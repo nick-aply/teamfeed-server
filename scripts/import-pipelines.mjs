@@ -105,13 +105,23 @@ async function createBrand(name) {
 // Mirror the seeding side-effect from Pipelines.jsx handleSave: any brand
 // added to a pipeline that doesn't already have an enrichmentStatus gets
 // seeded to 'queue'. This is what makes /leads pick it up.
+// Returns 'seeded' | 'skipped' | 'missing'. A 'missing' brandId logs a
+// warning but doesn't abort the import.
 async function seedEnrichmentIfMissing(brandId, brandData) {
-  if (brandData.enrichmentStatus) return false;
-  await db.collection('Brands').doc(brandId).update({
-    enrichmentStatus: 'queue',
-    updatedAt: FieldValue.serverTimestamp(),
-  });
-  return true;
+  if (brandData.enrichmentStatus) return 'skipped';
+  try {
+    await db.collection('Brands').doc(brandId).update({
+      enrichmentStatus: 'queue',
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    return 'seeded';
+  } catch (e) {
+    if (e.code === 5 /* NOT_FOUND */) {
+      console.warn(`  ⚠ brandId not found in Brands collection: ${brandId} — skipping seed`);
+      return 'missing';
+    }
+    throw e;
+  }
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────
@@ -150,43 +160,70 @@ async function main() {
       templateIds.push(id);
     }
 
-    // Resolve brand names → IDs (auto-create missing)
+    // Brand resolution: accept either brandIds (skip lookup) OR brandNames.
+    // brandIds win if both are present.
     const brandIds = [];
-    for (const name of card.brandNames || []) {
-      const key = String(name).toLowerCase().trim();
-      let id = brands.get(key);
-      if (!id) {
-        id = await createBrand(name);
-        brands.set(key, id);
-        brandData.set(id, { name: name.trim(), enrichmentStatus: 'queue' });
-        createdBrandCount += 1;
-        console.log(`[${slug}]   + created brand "${name}" → ${id}`);
+    if (Array.isArray(card.brandIds) && card.brandIds.length > 0) {
+      for (const id of card.brandIds) {
+        if (typeof id === 'string' && id.trim()) brandIds.push(id.trim());
       }
-      brandIds.push(id);
+    } else if (Array.isArray(card.brandNames)) {
+      for (const name of card.brandNames) {
+        const key = String(name).toLowerCase().trim();
+        let id = brands.get(key);
+        if (!id) {
+          id = await createBrand(name);
+          brands.set(key, id);
+          brandData.set(id, { name: name.trim(), enrichmentStatus: 'queue' });
+          createdBrandCount += 1;
+          console.log(`[${slug}]   + created brand "${name}" → ${id}`);
+        }
+        brandIds.push(id);
+      }
     }
 
-    // Seed enrichmentStatus on existing brands that lack it (mirrors UI)
+    // Seed enrichmentStatus on existing brands that lack it (mirrors UI).
+    // Missing brandIds get logged but don't abort the import.
+    let missingBrandsThisCard = 0;
     for (const id of brandIds) {
       const data = brandData.get(id) || {};
-      const seeded = await seedEnrichmentIfMissing(id, data);
-      if (seeded) {
+      const result = await seedEnrichmentIfMissing(id, data);
+      if (result === 'seeded') {
         brandData.set(id, { ...data, enrichmentStatus: 'queue' });
         seededCount += 1;
+      } else if (result === 'missing') {
+        missingBrandsThisCard += 1;
       }
     }
+    if (missingBrandsThisCard > 0) {
+      console.warn(
+        `[${slug}]   ⚠ ${missingBrandsThisCard} brandId${missingBrandsThisCard === 1 ? '' : 's'} not found — included in pipeline but not seeded`
+      );
+    }
 
-    // Build payload — only fields the script knows about. Anything else on the
-    // existing doc (e.g. older fields) is preserved by setDoc(merge:true).
+    // Build payload. Supports both the original (subtext-only) shape and
+    // the richer subtitle/description shape — both flow into the doc as
+    // separate fields, and `subtext` falls back to `subtitle` so the
+    // existing Pipelines.jsx editor still has something to render.
+    const subtitle = card.subtitle || '';
+    const description = card.description || '';
+    const subtext = card.subtext || subtitle || '';
+
     const payload = {
       stripTitle: card.stripTitle,
-      subtext: card.subtext || '',
+      subtitle,
+      description,
+      subtext,
       backgroundImage: card.backgroundImage || '',
       perks: Array.isArray(card.perks) ? card.perks : [],
       pipelineStatus: card.pipelineStatus || 'active',
       published: !!card.published,
       tags: Array.isArray(card.tags) ? card.tags : [],
+      // category is no longer rendered in the editor but still flows through
+      // to the doc (some Aply Web consumers may still read it).
+      ...(card.category ? { category: card.category } : {}),
       templateIds,
-      expDataFields: [],
+      expDataFields: Array.isArray(card.expDataFields) ? card.expDataFields : [],
       brandIds,
       updatedAt: FieldValue.serverTimestamp(),
     };

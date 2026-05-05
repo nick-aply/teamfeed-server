@@ -74,6 +74,93 @@ const app = express();
 const port = 3001;
 
 app.use(cors());
+
+// STRIPE WEBHOOK (Phase 3c) — must be registered with express.raw() BEFORE the
+// global express.json() below, so the request body stays untouched for
+// signature verification.
+app.post(
+  '/webhooks/stripe',
+  express.raw({ type: 'application/json' }),
+  async (req, res) => {
+    console.log('[stripe webhook] received');
+
+    const signature = req.headers['stripe-signature'];
+    if (!signature) {
+      console.error('[stripe webhook] Missing Stripe-Signature header');
+      return res.status(400).send('Missing Stripe-Signature header');
+    }
+
+    const secret = process.env.STRIPE_WEBHOOK_SECRET;
+    if (!secret) {
+      console.error('[stripe webhook] STRIPE_WEBHOOK_SECRET is not set');
+      return res.status(500).send('Webhook secret not configured');
+    }
+
+    let event;
+    try {
+      event = getStripe().webhooks.constructEvent(req.body, signature, secret);
+    } catch (err) {
+      console.error('[stripe webhook] Signature verification failed:', err.message);
+      return res.status(400).send(`Webhook Error: ${err.message}`);
+    }
+
+    if (event.type === 'checkout.session.completed') {
+      try {
+        const session = event.data.object;
+        const email = session.customer_details?.email || session.customer_email || null;
+        const pipelineId = session.metadata?.pipelineId || null;
+        const applicationDataRaw = session.metadata?.applicationData || '';
+
+        if (!email || !pipelineId) {
+          // Data we can't act on — 200 so Stripe doesn't retry forever.
+          console.error(
+            '[stripe webhook] checkout.session.completed missing email or pipelineId:',
+            { id: session.id, email, pipelineId }
+          );
+          return res.status(200).send('Skipped: missing email or pipelineId');
+        }
+
+        let formData = null;
+        if (applicationDataRaw) {
+          try {
+            formData = JSON.parse(applicationDataRaw);
+          } catch (_) {
+            // Phase 3a truncates metadata to 500 chars, so a partial JSON blob
+            // can land here. Preserve whatever we got rather than dropping it.
+            formData = { raw: applicationDataRaw };
+          }
+        }
+
+        const docId = `${email.replace(/[^a-z0-9]/gi, '_')}_${pipelineId}`;
+        const appDoc = {
+          email,
+          pipelineId,
+          formData,
+          paymentStatus: 'deposit_paid',
+          decisionStatus: 'pending',
+          stripeCustomerId: session.customer || null,
+          stripeCheckoutSessionId: session.id,
+          depositPaidAt: admin.firestore.FieldValue.serverTimestamp(),
+          submittedAt: admin.firestore.FieldValue.serverTimestamp(),
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        };
+
+        await db.collection('Applications').doc(docId).set(appDoc, { merge: true });
+        console.log('[stripe webhook] Application doc written:', docId);
+      } catch (err) {
+        // Transient (Firestore) failure — return 500 so Stripe retries.
+        console.error('[stripe webhook] Error processing checkout.session.completed:', err);
+        return res.status(500).send('Error processing event');
+      }
+    } else {
+      console.log('[stripe webhook] Ignored event type:', event.type);
+    }
+
+    return res.status(200).send('ok');
+  }
+);
+
 app.use(express.json());
 
 app.use((req, res, next) => {

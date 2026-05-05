@@ -1,0 +1,18 @@
+[
+  {
+    "id": "UhaqZR58nQ5qTSqq4OBU",
+    "name": "UGC Template 1",
+    "category": "",
+    "description": "Using this for pipelines that are just content creation based",
+    "fields": [
+      "ugc_portfolio",
+      "previous_collabs"
+    ],
+    "showOnCardFields": [
+      "ugc_portfolio",
+      "previous_collabs"
+    ],
+    "published": true,
+    "sortOrder": 10
+  }
+]

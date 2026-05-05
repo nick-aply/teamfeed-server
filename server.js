@@ -25,10 +25,37 @@ import { generateAlixResponse } from './AlixAIProfile.js';
 import cron from 'node-cron';
 import Stripe from 'stripe';
 import crypto from 'crypto';
+import { getStripe, getPriceIdForPipeline, PIPELINE_PRICE_KEYS } from './services/stripe.js';
 
 dotenv.config();
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+
+// Route-specific CORS allowlist for /api/stripe/* — explicit list of origins
+// permitted to call the new Stripe endpoints.
+//
+// CAVEAT: the global app.use(cors()) below currently writes
+// `Access-Control-Allow-Origin: *` to all responses BEFORE this route-level
+// middleware runs, so on the wire this allowlist is documentary rather than
+// enforcing. Tightening the global CORS to match this allowlist is a future
+// cleanup that needs to be checked against every legacy endpoint that
+// currently relies on wide-open cross-origin access.
+const STRIPE_ALLOWED_ORIGINS = new Set([
+  'https://teamfeed.co',
+  'https://www.teamfeed.co',
+  'http://localhost:5173', // teamfeed-web dev (Vite default)
+  'http://localhost:5174', // teamfeed-web dev (fallback when 5173 is taken)
+  'http://localhost:3031', // teamfeed-web dev (configured port in vite.config)
+  'http://localhost:3032', // teamfeed-web dev (vite fallback)
+]);
+const stripeCors = cors({
+  origin: (origin, cb) => {
+    // Allow non-browser callers (curl, server-to-server) which send no Origin.
+    if (!origin) return cb(null, true);
+    if (STRIPE_ALLOWED_ORIGINS.has(origin)) return cb(null, true);
+    return cb(new Error(`Origin ${origin} not allowed by /api/stripe CORS policy`));
+  },
+});
 
 // Storage bucket — falls back to the project's default appspot bucket.
 const STORAGE_BUCKET =
@@ -348,6 +375,70 @@ app.post('/create-checkout-session', async (req, res) => {
   } catch (err) {
     console.error('Stripe Error:', err);
     res.status(500).json({ error: 'Something went wrong.' });
+  }
+});
+
+
+// ===============================
+// STRIPE — /api/stripe/create-checkout-session  (Phase 3a)
+// Aply Specialist Program — $99 application deposit.
+// Called by teamfeed-web's /pay/:slug page. No webhook in this phase.
+// ===============================
+
+// Handle CORS preflight + main request through the same allowlist.
+app.options('/api/stripe/*', stripeCors);
+
+app.post('/api/stripe/create-checkout-session', stripeCors, async (req, res) => {
+  try {
+    const { pipelineId, applicationData } = req.body || {};
+
+    if (!pipelineId || typeof pipelineId !== 'string') {
+      return res.status(400).json({ error: 'Missing pipelineId' });
+    }
+
+    if (!(pipelineId in PIPELINE_PRICE_KEYS)) {
+      return res.status(400).json({ error: 'Unsupported pipeline' });
+    }
+
+    const priceId = getPriceIdForPipeline(pipelineId);
+    if (!priceId) {
+      console.error(
+        `[stripe] No price ID configured for pipeline "${pipelineId}". ` +
+        `Set ${PIPELINE_PRICE_KEYS[pipelineId]} in .env.`
+      );
+      return res.status(500).json({ error: 'Pipeline price not configured' });
+    }
+
+    const successUrl = process.env.STRIPE_SUCCESS_URL;
+    const cancelUrl = process.env.STRIPE_CANCEL_URL;
+    if (!successUrl || !cancelUrl) {
+      console.error('[stripe] STRIPE_SUCCESS_URL or STRIPE_CANCEL_URL missing in .env');
+      return res.status(500).json({ error: 'Checkout redirect URLs not configured' });
+    }
+
+    const session = await getStripe().checkout.sessions.create({
+      mode: 'payment',
+      payment_method_types: ['card'],
+      line_items: [{ price: priceId, quantity: 1 }],
+      success_url: successUrl,
+      cancel_url: cancelUrl,
+      // Metadata is here for Phase 3c webhook handling. Stripe rejects metadata
+      // values longer than 500 chars per key, so we truncate the JSON blob if
+      // it's huge — the full data should be persisted by the caller separately.
+      metadata: {
+        pipelineId,
+        applicationData: applicationData
+          ? JSON.stringify(applicationData).slice(0, 500)
+          : '',
+      },
+    });
+
+    return res.json({ checkoutUrl: session.url });
+  } catch (err) {
+    console.error('[stripe] create-checkout-session error:', err);
+    return res.status(500).json({
+      error: err?.message || 'Failed to create checkout session',
+    });
   }
 });
 
@@ -966,6 +1057,97 @@ app.post('/upload-logo-from-url', async (req, res) => {
     return res.json({ success: true, url, path, kind });
   } catch (e) {
     console.error('[upload-logo-from-url]', e);
+    return res.status(500).json({ error: 'Upload failed', details: e.message });
+  }
+});
+
+
+// ===============================
+// STRIP IMAGE — UPLOAD FROM URL
+// ===============================
+// Operator pastes an arbitrary image URL → server fetches it, validates
+// content-type + size, uploads to Firebase Storage, optionally writes the URL
+// onto a Strip doc field, and returns the permanent download URL.
+//
+// Body: { imageUrl: string, stripId?: string, field?: string }
+// - field defaults to 'bannerImage'. Forward-compat: future strip-level images
+//   (hero overrides, etc.) can use this same endpoint by passing a different
+//   field name.
+// - If stripId is omitted (e.g. uploading before a new strip is saved),
+//   server uploads + returns the URL only; client persists the URL on save.
+app.post('/upload-strip-image', async (req, res) => {
+  const { imageUrl, stripId, field = 'bannerImage' } = req.body || {};
+
+  if (!imageUrl || typeof imageUrl !== 'string' || !imageUrl.trim()) {
+    return res.status(400).json({ error: 'Missing imageUrl' });
+  }
+  if (typeof field !== 'string' || !field.trim()) {
+    return res.status(400).json({ error: 'field must be a non-empty string' });
+  }
+
+  try {
+    const fetchRes = await fetch(imageUrl);
+    if (!fetchRes.ok) {
+      return res.status(502).json({
+        error: `Source URL returned ${fetchRes.status}`,
+        status: fetchRes.status,
+      });
+    }
+
+    const contentType = fetchRes.headers.get('content-type') || 'application/octet-stream';
+    if (!contentType.startsWith('image/')) {
+      return res.status(415).json({
+        error: `Source URL did not return an image (content-type: ${contentType})`,
+      });
+    }
+
+    const arrayBuffer = await fetchRes.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+
+    if (buffer.length > 5 * 1024 * 1024) {
+      return res.status(413).json({
+        error: `Image too large (${buffer.length} bytes, max 5MB)`,
+      });
+    }
+
+    const ext = (contentType.split('/')[1] || 'jpg').split(';')[0];
+    const fileKey = stripId || `pending_${crypto.randomUUID()}`;
+    const path = `stripImages/${fileKey}_${field}_${Date.now()}.${ext}`;
+
+    const downloadToken = crypto.randomUUID();
+    const file = bucket.file(path);
+    await file.save(buffer, {
+      contentType,
+      metadata: {
+        metadata: {
+          firebaseStorageDownloadTokens: downloadToken,
+          uploadedBy: 'aply-server/upload-strip-image',
+          sourceUrl: imageUrl,
+          stripField: field,
+        },
+      },
+    });
+
+    const url = `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encodeURIComponent(
+      path
+    )}?alt=media&token=${downloadToken}`;
+
+    if (stripId) {
+      await db
+        .collection('Strips')
+        .doc(stripId)
+        .set(
+          {
+            [field]: url,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          },
+          { merge: true }
+        );
+    }
+
+    return res.json({ success: true, url, path, field, stripId: stripId || null });
+  } catch (e) {
+    console.error('[upload-strip-image]', e);
     return res.status(500).json({ error: 'Upload failed', details: e.message });
   }
 });

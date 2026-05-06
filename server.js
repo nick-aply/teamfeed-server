@@ -509,6 +509,13 @@ app.post('/api/stripe/create-checkout-session', stripeCors, async (req, res) => 
       line_items: [{ price: priceId, quantity: 1 }],
       success_url: successUrl,
       cancel_url: cancelUrl,
+      // Force a Customer to be created and save the payment method for
+      // off-session reuse, so we can charge the $400 balance automatically
+      // when an admin accepts the application later.
+      customer_creation: 'always',
+      payment_intent_data: {
+        setup_future_usage: 'off_session',
+      },
       // Metadata is here for Phase 3c webhook handling. Stripe rejects metadata
       // values longer than 500 chars per key, so we truncate the JSON blob if
       // it's huge — the full data should be persisted by the caller separately.

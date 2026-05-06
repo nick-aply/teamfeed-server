@@ -538,6 +538,190 @@ app.post('/api/stripe/create-checkout-session', stripeCors, async (req, res) => 
 
 
 // ===============================
+// STRIPE — /api/stripe/charge-balance  (Phase 4a)
+// Admin-triggered: charges the $400 balance off-session against the saved
+// Customer + payment method, then flips the Application to accepted.
+// ===============================
+app.post('/api/stripe/charge-balance', stripeCors, async (req, res) => {
+  // TODO: gate behind admin auth before public launch
+  try {
+    const { applicationId } = req.body || {};
+    if (!applicationId || typeof applicationId !== 'string') {
+      return res.status(400).json({ error: 'Missing applicationId' });
+    }
+
+    const ref = db.collection('Applications').doc(applicationId);
+    const snap = await ref.get();
+    if (!snap.exists) {
+      return res.status(404).json({ error: 'Application not found' });
+    }
+    const appDoc = snap.data();
+
+    if (appDoc.paymentStatus !== 'deposit_paid') {
+      return res.status(400).json({
+        error: `Cannot charge balance — paymentStatus is "${appDoc.paymentStatus}", expected "deposit_paid".`,
+      });
+    }
+    if (appDoc.decisionStatus !== 'pending') {
+      return res.status(400).json({
+        error: `Cannot charge balance — decisionStatus is "${appDoc.decisionStatus}", expected "pending".`,
+      });
+    }
+    if (!appDoc.stripeCustomerId) {
+      return res.status(400).json({ error: 'Application has no stripeCustomerId on file.' });
+    }
+
+    const stripeClient = getStripe();
+    const pms = await stripeClient.customers.listPaymentMethods(appDoc.stripeCustomerId, {
+      type: 'card',
+    });
+    if (!pms.data || pms.data.length === 0) {
+      return res.status(400).json({ error: 'No saved payment method on customer.' });
+    }
+    const paymentMethodId = pms.data[0].id;
+
+    let pi;
+    try {
+      pi = await stripeClient.paymentIntents.create({
+        amount: 40000,
+        currency: 'usd',
+        customer: appDoc.stripeCustomerId,
+        payment_method: paymentMethodId,
+        off_session: true,
+        confirm: true,
+        description: `Sorority Cert balance — ${applicationId}`,
+        metadata: { applicationId, pipelineId: appDoc.pipelineId || '' },
+      });
+    } catch (e) {
+      // Off-session declines and 3DS challenges land here. Don't update the
+      // Application doc — admin can retry after asking applicant to update
+      // their payment method or complete the auth challenge.
+      console.error('[stripe] charge-balance PaymentIntent failed:', {
+        applicationId,
+        message: e.message,
+        code: e.code,
+        declineCode: e.decline_code,
+        paymentIntentId: e.payment_intent?.id,
+      });
+      return res.status(400).json({
+        error: e.message,
+        code: e.code || null,
+        declineCode: e.decline_code || null,
+        paymentIntentId: e.payment_intent?.id || null,
+      });
+    }
+
+    if (pi.status !== 'succeeded') {
+      // PI created but not yet succeeded (e.g. requires_action). Treat as a
+      // failure for this synchronous flow — admin retries.
+      console.error('[stripe] charge-balance PI not succeeded:', {
+        applicationId,
+        status: pi.status,
+        paymentIntentId: pi.id,
+      });
+      return res.status(400).json({
+        error: `PaymentIntent status is "${pi.status}", expected "succeeded".`,
+        paymentIntentId: pi.id,
+      });
+    }
+
+    await ref.update({
+      paymentStatus: 'balance_paid',
+      decisionStatus: 'accepted',
+      balancePaidAt: admin.firestore.FieldValue.serverTimestamp(),
+      decidedAt: admin.firestore.FieldValue.serverTimestamp(),
+      balancePaymentIntentId: pi.id,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    console.log('[stripe] charge-balance success:', { applicationId, paymentIntentId: pi.id });
+    return res.json({ ok: true, paymentIntentId: pi.id });
+  } catch (err) {
+    console.error('[stripe] charge-balance error:', err);
+    return res.status(500).json({ error: err?.message || 'Failed to charge balance' });
+  }
+});
+
+
+// ===============================
+// STRIPE — /api/stripe/refund-deposit  (Phase 4a)
+// Admin-triggered: full refund of the $99 deposit and flips the Application
+// to rejected.
+// ===============================
+app.post('/api/stripe/refund-deposit', stripeCors, async (req, res) => {
+  // TODO: gate behind admin auth before public launch
+  try {
+    const { applicationId, reason } = req.body || {};
+    if (!applicationId || typeof applicationId !== 'string') {
+      return res.status(400).json({ error: 'Missing applicationId' });
+    }
+
+    const ref = db.collection('Applications').doc(applicationId);
+    const snap = await ref.get();
+    if (!snap.exists) {
+      return res.status(404).json({ error: 'Application not found' });
+    }
+    const appDoc = snap.data();
+
+    if (appDoc.paymentStatus !== 'deposit_paid') {
+      return res.status(400).json({
+        error: `Cannot refund — paymentStatus is "${appDoc.paymentStatus}", expected "deposit_paid".`,
+      });
+    }
+    if (appDoc.decisionStatus !== 'pending') {
+      return res.status(400).json({
+        error: `Cannot refund — decisionStatus is "${appDoc.decisionStatus}", expected "pending".`,
+      });
+    }
+    if (!appDoc.stripeCheckoutSessionId) {
+      return res.status(400).json({ error: 'Application has no stripeCheckoutSessionId on file.' });
+    }
+
+    const stripeClient = getStripe();
+    let refund;
+    try {
+      const session = await stripeClient.checkout.sessions.retrieve(
+        appDoc.stripeCheckoutSessionId
+      );
+      if (!session.payment_intent) {
+        return res.status(400).json({
+          error: 'Checkout session has no payment_intent — cannot refund.',
+        });
+      }
+      refund = await stripeClient.refunds.create({
+        payment_intent: session.payment_intent,
+        reason: 'requested_by_customer',
+        metadata: { applicationId, adminReason: reason || '' },
+      });
+    } catch (e) {
+      console.error('[stripe] refund-deposit failed:', {
+        applicationId,
+        message: e.message,
+        code: e.code,
+      });
+      return res.status(400).json({ error: e.message });
+    }
+
+    await ref.update({
+      paymentStatus: 'refunded',
+      decisionStatus: 'rejected',
+      refundedAt: admin.firestore.FieldValue.serverTimestamp(),
+      decidedAt: admin.firestore.FieldValue.serverTimestamp(),
+      rejectionReason: reason || null,
+      refundId: refund.id,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    console.log('[stripe] refund-deposit success:', { applicationId, refundId: refund.id });
+    return res.json({ ok: true, refundId: refund.id });
+  } catch (err) {
+    console.error('[stripe] refund-deposit error:', err);
+    return res.status(500).json({ error: err?.message || 'Failed to refund deposit' });
+  }
+});
+
+
+// ===============================
 // ALIX — AI CHAT ENDPOINT
 // ===============================
 app.post('/alix', async (req, res) => {

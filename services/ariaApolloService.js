@@ -125,8 +125,11 @@ export async function revealApolloPerson(apolloPersonId) {
   return json?.person || json;
 }
 
-// Map an Apollo /v1/people/match response to a Contacts-doc patch — only
-// fields we want to overwrite. Doesn't touch listIds, notes, source, etc.
+// Map an Apollo /v1/people/match response to a Contacts-doc patch.
+// Captures the full set of fields we care about — person photo, headline,
+// geo, seniority, social URLs, plus a nested `companyInfo` with the org
+// data (logo, industry, headcount, revenue, etc.). Doesn't touch listIds,
+// notes, source, verificationStatus.
 export function mapApolloRevealToContactPatch(person) {
   if (!person) return null;
   const name =
@@ -134,19 +137,108 @@ export function mapApolloRevealToContactPatch(person) {
     [person.first_name, person.last_name].filter(Boolean).join(' ').trim() ||
     null;
   const email = (person.email || '').trim().toLowerCase() || null;
-  const linkedinUrl = person.linkedin_url || null;
   const org = person.organization || person.account || null;
-  const company = org?.name || null;
-  const title = person.title || null;
-  const patch = {};
-  if (name) patch.name = name;
-  if (email) patch.email = email;
-  if (linkedinUrl) patch.linkedinUrl = linkedinUrl;
-  if (company) patch.company = company;
-  if (title) patch.title = title;
-  // Once we've revealed, the email status is "we have one" — but we leave
-  // verificationStatus alone since Apollo's flag isn't a deliverability check.
+  const patch = pickDefined({
+    // Identity
+    name,
+    firstName: person.first_name || null,
+    lastName: person.last_name || null,
+    email,
+    emailStatus: person.email_status || null,
+    emailConfidence: person.extrapolated_email_confidence || null,
+    // Profile
+    title: person.title || null,
+    headline: person.headline || null,
+    seniority: person.seniority || null,
+    departments: arrOrNull(person.departments),
+    subdepartments: arrOrNull(person.subdepartments),
+    functions: arrOrNull(person.functions),
+    photoUrl: person.photo_url || null,
+    // Geo
+    city: person.city || null,
+    state: person.state || null,
+    country: person.country || null,
+    postalCode: person.postal_code || null,
+    timeZone: person.time_zone || null,
+    // Socials
+    linkedinUrl: person.linkedin_url || null,
+    twitterUrl: person.twitter_url || null,
+    facebookUrl: person.facebook_url || null,
+    githubUrl: person.github_url || null,
+    // Intent (Apollo's buyer-intent score — paid feature)
+    intentStrength: person.intent_strength || null,
+    showIntent: person.show_intent ?? null,
+    // Top-level company name kept for the table column
+    company: org?.name || null,
+    // Nested company detail
+    companyInfo: org ? mapApolloOrgToCompanyInfo(org) : null,
+    // Employment history — past roles, useful context for Aria's drafts.
+    employmentHistory: Array.isArray(person.employment_history)
+      ? person.employment_history.slice(0, 10).map((j) => ({
+          organizationName: j.organization_name || j.organization?.name || null,
+          title: j.title || null,
+          startDate: j.start_date || null,
+          endDate: j.end_date || null,
+          current: !!j.current,
+        }))
+      : null,
+  });
   return patch;
+}
+
+function mapApolloOrgToCompanyInfo(org) {
+  return pickDefined({
+    apolloId: org.id || null,
+    name: org.name || null,
+    domain: org.primary_domain || null,
+    websiteUrl: org.website_url || null,
+    logoUrl: org.logo_url || null,
+    linkedinUrl: org.linkedin_url || null,
+    twitterUrl: org.twitter_url || null,
+    facebookUrl: org.facebook_url || null,
+    crunchbaseUrl: org.crunchbase_url || null,
+    angellistUrl: org.angellist_url || null,
+    industry: org.industry || null,
+    industries: arrOrNull(org.industries),
+    secondaryIndustries: arrOrNull(org.secondary_industries),
+    keywords: arrOrNull(org.keywords),
+    estimatedEmployees: numOrNull(org.estimated_num_employees),
+    revenue: numOrNull(org.organization_revenue),
+    revenuePrinted: org.organization_revenue_printed || null,
+    foundedYear: numOrNull(org.founded_year),
+    shortDescription: org.short_description || null,
+    city: org.city || null,
+    state: org.state || null,
+    country: org.country || null,
+    postalCode: org.postal_code || null,
+    streetAddress: org.street_address || null,
+    primaryPhone: org.primary_phone?.number || org.primary_phone || org.phone || null,
+    publiclyTradedExchange: org.publicly_traded_exchange || null,
+    publiclyTradedSymbol: org.publicly_traded_symbol || null,
+    alexaRanking: numOrNull(org.alexa_ranking),
+  });
+}
+
+// Helper: drop keys whose value is null/undefined/empty so Firestore doesn't
+// fill the doc with junk fields. Arrays of length 0 are dropped too.
+function pickDefined(obj) {
+  const out = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (v == null) continue;
+    if (Array.isArray(v) && v.length === 0) continue;
+    if (typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 0) continue;
+    out[k] = v;
+  }
+  return out;
+}
+function arrOrNull(v) {
+  if (!Array.isArray(v) || v.length === 0) return null;
+  return v;
+}
+function numOrNull(v) {
+  if (v == null) return null;
+  const n = typeof v === 'number' ? v : Number(v);
+  return Number.isFinite(n) ? n : null;
 }
 
 // Map an Apollo /v1/mixed_people/search person object to our /Contacts schema.

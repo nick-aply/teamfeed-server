@@ -163,7 +163,9 @@ export function mountAriaRoutes(app, { admin }) {
       const people = Array.isArray(apolloRes.people) ? apolloRes.people.slice(0, RESULT_CAP) : [];
 
       // Step 4: write each as a Contact with deterministic doc ID = apolloPersonId.
-      // Re-runs against the same query dedup automatically since the doc ID is stable.
+      // Re-runs against the same query dedup by ID. If a doc already exists,
+      // SKIP — we never want to overwrite revealed data (full name, email,
+      // photo, etc.) with the masked preview from a re-search.
       const contactIds = [];
       const writes = [];
       const now = FieldValue.serverTimestamp();
@@ -172,27 +174,31 @@ export function mountAriaRoutes(app, { admin }) {
         if (!mapped.apolloPersonId) continue;
         contactIds.push(mapped.apolloPersonId);
         const ref = db.doc(`Contacts/${mapped.apolloPersonId}`);
-        writes.push(
-          ref.set(
-            {
-              name: mapped.name,
-              email: mapped.email || '',
-              linkedinUrl: mapped.linkedinUrl,
-              company: mapped.company,
-              title: mapped.title,
-              verificationStatus: 'unverified',
-              source: 'apollo',
-              listIds: [],
-              notes: '',
-              apolloPersonId: mapped.apolloPersonId,
-              createdAt: now,
-              updatedAt: now,
-              lastActivityAt: null,
-              createdBy: req.aria.uid,
-            },
-            { merge: true },
-          ),
-        );
+        writes.push((async () => {
+          const snap = await ref.get();
+          if (snap.exists) {
+            // Already in our DB — don't clobber. The contactId is still
+            // returned to the client so the UI shows it in the results table.
+            return;
+          }
+          await ref.set({
+            name: mapped.name || null,
+            email: mapped.email || '',
+            linkedinUrl: mapped.linkedinUrl,
+            company: mapped.company,
+            title: mapped.title,
+            photoUrl: mapped.photoUrl || null,
+            verificationStatus: 'unverified',
+            source: 'apollo',
+            listIds: [],
+            notes: '',
+            apolloPersonId: mapped.apolloPersonId,
+            createdAt: now,
+            updatedAt: now,
+            lastActivityAt: null,
+            createdBy: req.aria.uid,
+          });
+        })());
       }
       await Promise.all(writes);
 

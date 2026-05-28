@@ -156,41 +156,11 @@ export function mountAriaRoutes(app, { admin }) {
         return res.status(502).json({ error: 'Apollo call failed', detail: e.message, payload: e.payload });
       }
 
-      const previewPeople = Array.isArray(apolloRes.people) ? apolloRes.people.slice(0, RESULT_CAP) : [];
-
-      // Step 3b: auto-reveal every result so the user gets unmasked emails out
-      // of the box. Apollo's basic-tier api_search returns first_name +
-      // last_name_obfuscated + no email; /people/match returns the full
-      // record but costs 1 credit each. Concurrency capped to 10 to avoid
-      // tripping Apollo rate limits or making the modal hang too long.
-      const REVEAL_CONCURRENCY = 10;
-      const people = [];
-      let revealedCount = 0;
-      for (let i = 0; i < previewPeople.length; i += REVEAL_CONCURRENCY) {
-        const chunk = previewPeople.slice(i, i + REVEAL_CONCURRENCY);
-        // eslint-disable-next-line no-await-in-loop
-        const settled = await Promise.allSettled(
-          chunk.map(async (preview) => {
-            if (!preview?.id) return preview;
-            try {
-              const full = await revealApolloPerson(preview.id);
-              if (full && (full.email || full.last_name)) {
-                revealedCount += 1;
-                // Merge the revealed fields ON TOP of the preview so we keep
-                // anything the preview had that the match doesn't return.
-                return { ...preview, ...full };
-              }
-            } catch (e) {
-              console.error('[aria] reveal-on-search failed for', preview.id, e.message);
-            }
-            return preview;
-          }),
-        );
-        settled.forEach((s) => {
-          if (s.status === 'fulfilled') people.push(s.value);
-        });
-      }
-      console.log(`[aria] apollo-search: ${previewPeople.length} previews, ${revealedCount} revealed`);
+      // Apollo's api_search is free — preview people come back masked
+      // (first_name + last_name_obfuscated, no email). We deliberately do
+      // NOT auto-reveal during search; the user clicks "Reveal" in the
+      // modal to spend credits intentionally on the rows they keep.
+      const people = Array.isArray(apolloRes.people) ? apolloRes.people.slice(0, RESULT_CAP) : [];
 
       // Step 4: write each as a Contact with deterministic doc ID = apolloPersonId.
       // Re-runs against the same query dedup automatically since the doc ID is stable.

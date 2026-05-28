@@ -10,6 +10,16 @@ export function isApolloConfigured() {
   return !!process.env.APOLLO_API_KEY;
 }
 
+// Params that the old /mixed_people/search endpoint accepted but the new
+// /mixed_people/api_search endpoint silently zero-result-s on. Confirmed
+// empirically by probing — `q_keywords: "Series B"` drops total_entries
+// from ~1500 to 0 with no error response. Strip them defensively so a
+// Claude hallucination here can't tank an otherwise good query.
+const UNSUPPORTED_PARAMS = new Set([
+  'q_keywords',
+  'q_organization_keyword_tags',
+]);
+
 export async function searchPeople(params) {
   const apiKey = process.env.APOLLO_API_KEY;
   if (!apiKey) {
@@ -17,7 +27,10 @@ export async function searchPeople(params) {
     e.code = 'APOLLO_NOT_CONFIGURED';
     throw e;
   }
-  const body = { ...params, per_page: Math.min(params.per_page || PER_PAGE_CAP, PER_PAGE_CAP), page: 1 };
+  const sanitized = Object.fromEntries(
+    Object.entries(params).filter(([k]) => !UNSUPPORTED_PARAMS.has(k)),
+  );
+  const body = { ...sanitized, per_page: Math.min(sanitized.per_page || PER_PAGE_CAP, PER_PAGE_CAP), page: 1 };
   const res = await fetch(APOLLO_URL, {
     method: 'POST',
     headers: {

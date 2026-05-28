@@ -9,7 +9,7 @@ import Anthropic from '@anthropic-ai/sdk';
 
 const MODEL_ID = 'claude-sonnet-4-6';
 
-const SYSTEM_PROMPT = `You translate plain-English descriptions of a sales target audience into Apollo /v1/mixed_people/search query parameters.
+const SYSTEM_PROMPT = `You translate plain-English descriptions of a sales target audience into Apollo /v1/mixed_people/api_search query parameters.
 
 OUTPUT FORMAT — return ONLY a single JSON object, no prose. Schema:
 {
@@ -20,14 +20,26 @@ OUTPUT FORMAT — return ONLY a single JSON object, no prose. Schema:
   "organization_locations": string[]?,
   "organization_industries": string[]?,
   "organization_num_employees_ranges": string[]?, // "1,10", "11,50", "51,200", "201,500", "501,1000", "1001,5000", "5001,10000", "10001+"
-  "q_keywords": string?,              // free-text keywords searched across the person + org (e.g. "hiring SDRs", "Series B", "fintech")
   "page": 1,
   "per_page": 100
 }
 
+CRITICAL — the new api_search endpoint does NOT accept free-text search:
+- DO NOT emit "q_keywords", "q_organization_keyword_tags", or any q_* field. They silently zero-result the entire query.
+- Map free-text signals into the closest concrete filter instead:
+    "Series A"       → organization_num_employees_ranges: ["11,50"]
+    "Series B"       → organization_num_employees_ranges: ["51,200"]
+    "Series C/D"     → organization_num_employees_ranges: ["201,500"]
+    "early-stage"    → organization_num_employees_ranges: ["1,10","11,50"]
+    "enterprise"     → organization_num_employees_ranges: ["1001,5000","5001,10000","10001+"]
+    "hiring SDRs"    → drop it (not expressible); narrower titles cover most of the intent
+    "PLG / SaaS"     → organization_industries: ["computer software","saas","internet"]
+    "B2B SaaS"       → organization_industries: ["computer software","saas"]
+    "fintech"        → organization_industries: ["financial services","banking","investment management"]
+    "healthcare"     → organization_industries: ["hospital & health care","health, wellness and fitness","medical practice"]
+
 GUIDELINES:
 - Prefer concrete title strings over loose seniorities. If a description says "CMOs", use person_titles: ["Chief Marketing Officer", "CMO"], not just seniority.
-- For company-stage signals like "Series A/B/C", "recently raised", "hiring SDRs", "PLG" — put them into q_keywords.
 - Always set per_page: 100 and page: 1.
 - Omit any field you can't infer with confidence. Smaller, more targeted queries beat broad ones — Aria can refine later.
 - Never invent locations or industries. If the description is location-agnostic, omit those fields.
@@ -36,15 +48,15 @@ EXAMPLES:
 
 User: "CMOs at Series B B2B SaaS companies hiring SDRs"
 Output:
-{"person_titles":["Chief Marketing Officer","CMO","VP of Marketing","Head of Marketing"],"organization_industries":["computer software","information technology and services","saas"],"organization_num_employees_ranges":["51,200","201,500"],"q_keywords":"Series B hiring SDR","page":1,"per_page":100}
+{"person_titles":["Chief Marketing Officer","CMO","VP of Marketing","Head of Marketing"],"organization_industries":["computer software","information technology and services","saas"],"organization_num_employees_ranges":["51,200"],"page":1,"per_page":100}
 
 User: "Healthcare CROs in California, ops focused"
 Output:
-{"person_titles":["Chief Revenue Officer","CRO","VP of Revenue Operations","Head of Revenue Operations"],"organization_industries":["hospital & health care","health, wellness and fitness","medical practice"],"person_locations":["California, US"],"q_keywords":"revenue operations","page":1,"per_page":100}
+{"person_titles":["Chief Revenue Officer","CRO","VP of Revenue Operations","Head of Revenue Operations"],"organization_industries":["hospital & health care","health, wellness and fitness","medical practice"],"person_locations":["California, US"],"page":1,"per_page":100}
 
 User: "Sorority presidents at Big Ten universities"
 Output:
-{"person_titles":["President"],"q_keywords":"sorority president Big Ten","page":1,"per_page":100}
+{"person_titles":["President","Chapter President"],"organization_industries":["higher education"],"page":1,"per_page":100}
 `;
 
 let _client = null;

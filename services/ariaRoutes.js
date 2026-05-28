@@ -7,6 +7,7 @@
 // Auth: Bearer <Firebase ID token>; the token's UID must have
 //       tfTeams/{uid}.manager === true (matches the Firestore rule).
 
+import crypto from 'node:crypto';
 import { isAnthropicConfigured, translateToApolloParams } from './ariaClaudeService.js';
 import {
   isApolloConfigured,
@@ -22,6 +23,66 @@ const RESULT_CAP = 100;
 export function mountAriaRoutes(app, { admin }) {
   const db = admin.firestore();
   const FieldValue = admin.firestore.FieldValue;
+  const bucket = admin.storage().bucket();
+
+  // Download an image from `sourceUrl` and rehost it in Firebase Storage at
+  // `destPath`. Returns the permanent download-token URL on success, null on
+  // failure (caller falls back to the original sourceUrl). Matches the
+  // download-token URL shape used by /upload-logo-from-url so the client
+  // doesn't care which path wrote the file.
+  async function rehostImage(sourceUrl, destPath) {
+    try {
+      const res = await fetch(sourceUrl);
+      if (!res.ok) return null;
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.startsWith('image/')) return null;
+      const buf = Buffer.from(await res.arrayBuffer());
+      if (buf.length > 5 * 1024 * 1024) return null; // 5MB cap (same as logo upload)
+      const downloadToken = crypto.randomUUID();
+      const file = bucket.file(destPath);
+      await file.save(buf, {
+        contentType,
+        resumable: false,
+        metadata: {
+          cacheControl: 'public, max-age=31536000',
+          metadata: {
+            firebaseStorageDownloadTokens: downloadToken,
+            uploadedBy: 'aply-server/aria-reveal',
+            sourceUrl,
+          },
+        },
+      });
+      return `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encodeURIComponent(destPath)}?alt=media&token=${downloadToken}`;
+    } catch (e) {
+      console.error('[aria] rehost failed:', sourceUrl?.slice(0, 80), e.message);
+      return null;
+    }
+  }
+
+  // Rehost person photo + company logo (if present) into Firebase Storage so
+  // we own permanent URLs instead of LinkedIn's expiring CDN URLs. Mutates
+  // `patch` in place — failed rehosts leave the original URL intact.
+  async function rehostContactPhotos(patch, apolloPersonId) {
+    const tasks = [];
+    if (patch.photoUrl) {
+      tasks.push(
+        rehostImage(patch.photoUrl, `aria-photos/contacts/${apolloPersonId}.jpg`).then((r) => {
+          if (r) patch.photoUrl = r;
+        }),
+      );
+    }
+    if (patch.companyInfo?.logoUrl && patch.companyInfo.apolloId) {
+      tasks.push(
+        rehostImage(
+          patch.companyInfo.logoUrl,
+          `aria-photos/companies/${patch.companyInfo.apolloId}.png`,
+        ).then((r) => {
+          if (r) patch.companyInfo.logoUrl = r;
+        }),
+      );
+    }
+    await Promise.all(tasks);
+  }
 
   // Admin gate. Real data model:
   //   tfTeams/{teamId} {
@@ -242,6 +303,9 @@ export function mountAriaRoutes(app, { admin }) {
       if (!patch || Object.keys(patch).length === 0) {
         return res.status(502).json({ error: 'Apollo returned no usable fields for this person' });
       }
+      // Rehost photo + company logo to Firebase Storage so the URLs we store
+      // outlast LinkedIn's expiring CDN URLs. Mutates `patch` in place.
+      await rehostContactPhotos(patch, c.apolloPersonId);
       await ref.update({ ...patch, updatedAt: FieldValue.serverTimestamp() });
       return res.json({ contactId, patch });
     } catch (e) {
@@ -283,6 +347,7 @@ export function mountAriaRoutes(app, { admin }) {
           if (!patch || Object.keys(patch).length === 0) {
             return { contactId, ok: false, error: 'no usable fields returned' };
           }
+          await rehostContactPhotos(patch, c.apolloPersonId);
           await ref.update({ ...patch, updatedAt: FieldValue.serverTimestamp() });
           return { contactId, ok: true, patch };
         } catch (e) {

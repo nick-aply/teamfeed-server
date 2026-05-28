@@ -1,7 +1,9 @@
 // Aria — Apollo API wrapper. Hits /v1/mixed_people/search and maps the
 // response into our /Contacts schema. V1 caps at 100 results per call.
 
-const APOLLO_URL = 'https://api.apollo.io/api/v1/mixed_people/search';
+// New endpoint per Apollo's 2025 deprecation of /mixed_people/search.
+// Docs: https://docs.apollo.io/reference/people-api-search
+const APOLLO_URL = 'https://api.apollo.io/api/v1/mixed_people/api_search';
 const PER_PAGE_CAP = 100;
 
 export function isApolloConfigured() {

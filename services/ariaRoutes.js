@@ -93,6 +93,7 @@ export function mountAriaRoutes(app, { admin }) {
       try {
         apolloRes = await searchPeople(queryParams);
       } catch (e) {
+        console.error('[aria] apollo error:', e.status, e.message, e.payload || '');
         await queryRef.set(
           {
             status: 'failed',

@@ -26,6 +26,7 @@ import cron from 'node-cron';
 import Stripe from 'stripe';
 import crypto from 'crypto';
 import { getStripe, getPriceIdForPipeline, PIPELINE_PRICE_KEYS } from './services/stripe.js';
+import { mountAriaRoutes } from './services/ariaRoutes.js';
 
 dotenv.config();
 
@@ -171,6 +172,11 @@ app.use((req, res, next) => {
 app.get('/', (req, res) => {
   res.send('✅ Teamfeed backend is live.');
 });
+
+// ── Aria (V1: contacts admin) ────────────────────────────────────────────────
+// Apollo natural-language search + assign-to-list. Requires APOLLO_API_KEY +
+// ANTHROPIC_API_KEY env vars; returns 503 if either is missing.
+mountAriaRoutes(app, { admin });
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const SENDGRID_API_KEY = process.env.SENDGRID_API_KEY;
@@ -510,7 +516,7 @@ app.post('/api/stripe/create-checkout-session', stripeCors, async (req, res) => 
       success_url: successUrl,
       cancel_url: cancelUrl,
       // Force a Customer to be created and save the payment method for
-      // off-session reuse, so we can charge the $400 balance automatically
+      // off-session reuse, so we can charge the $350 balance automatically
       // when an admin accepts the application later.
       customer_creation: 'always',
       payment_intent_data: {
@@ -539,7 +545,7 @@ app.post('/api/stripe/create-checkout-session', stripeCors, async (req, res) => 
 
 // ===============================
 // STRIPE — /api/stripe/charge-balance  (Phase 4a)
-// Admin-triggered: charges the $400 balance off-session against the saved
+// Admin-triggered: charges the $350 balance off-session against the saved
 // Customer + payment method, then flips the Application to accepted.
 // ===============================
 app.post('/api/stripe/charge-balance', stripeCors, async (req, res) => {
@@ -583,7 +589,7 @@ app.post('/api/stripe/charge-balance', stripeCors, async (req, res) => {
     let pi;
     try {
       pi = await stripeClient.paymentIntents.create({
-        amount: 40000,
+        amount: 35000,
         currency: 'usd',
         customer: appDoc.stripeCustomerId,
         payment_method: paymentMethodId,

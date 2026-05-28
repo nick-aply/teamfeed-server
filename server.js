@@ -28,7 +28,13 @@ import crypto from 'crypto';
 import { getStripe, getPriceIdForPipeline, PIPELINE_PRICE_KEYS } from './services/stripe.js';
 import { mountAriaRoutes } from './services/ariaRoutes.js';
 
-dotenv.config();
+// override: true so .env wins over any pre-set shell values. Required because
+// Claude Code (and some other dev tools) export `ANTHROPIC_API_KEY=` (empty)
+// into spawned subprocesses to prevent the host's API key from leaking — the
+// default dotenv behavior would then keep the empty value and ignore .env.
+// In production this is moot (Render has no .env file; dashboard env vars are
+// the only source).
+dotenv.config({ override: true });
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 

@@ -17,12 +17,18 @@ OUTPUT FORMAT — return ONLY a single JSON object, no prose. Schema:
   "person_seniorities": string[]?,    // owner, founder, c_suite, partner, vp, head, director, manager, senior, entry, intern
   "person_locations": string[]?,      // "San Francisco, US", "California, US", "United States"
   "person_departments": string[]?,    // c_suite, marketing, sales, engineering, operations, finance, hr, product, design, legal, customer_success, information_technology
+  "organization_names": string[]?,    // SPECIFIC company names the user named (e.g. ["Poppi","Olipop"]). Server resolves these to Apollo org IDs.
   "organization_locations": string[]?,
   "organization_industries": string[]?,
   "organization_num_employees_ranges": string[]?, // "1,10", "11,50", "51,200", "201,500", "501,1000", "1001,5000", "5001,10000", "10001+"
   "page": 1,
   "per_page": 100
 }
+
+COMPANY-NAME RULE (read carefully):
+- If the description names specific companies — e.g. "at Poppi, Olipop, and Culture Pop", "at Stripe", "at Series B SaaS like Airtable" — put them in organization_names AS LITERAL NAMES, one per array element.
+- Do NOT also include organization_industries or organization_num_employees_ranges when organization_names is set — the named companies are the filter. Adding industry/size on top can zero out the results if Apollo's record disagrees.
+- Strip leading "the", trailing "Inc/LLC/Corp" before adding to the array.
 
 CRITICAL — the new api_search endpoint does NOT accept free-text search:
 - DO NOT emit "q_keywords", "q_organization_keyword_tags", or any q_* field. They silently zero-result the entire query.
@@ -57,6 +63,14 @@ Output:
 User: "Sorority presidents at Big Ten universities"
 Output:
 {"person_titles":["President","Chapter President"],"organization_industries":["higher education"],"page":1,"per_page":100}
+
+User: "Social Media and marketing roles at Poppi, Olipop, and Culture Pop"
+Output:
+{"person_titles":["Social Media Manager","Social Media Coordinator","Social Media Specialist","Marketing Manager","Brand Manager","Community Manager","Content Manager"],"person_departments":["marketing"],"organization_names":["Poppi","Olipop","Culture Pop"],"page":1,"per_page":100}
+
+User: "Engineers at Stripe"
+Output:
+{"person_titles":["Software Engineer","Senior Software Engineer","Staff Software Engineer","Engineering Manager"],"person_departments":["engineering"],"organization_names":["Stripe"],"page":1,"per_page":100}
 `;
 
 let _client = null;

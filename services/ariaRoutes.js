@@ -12,6 +12,7 @@ import {
   isApolloConfigured,
   mapApolloPersonToContact,
   mapApolloRevealToContactPatch,
+  resolveOrganizationByName,
   revealApolloPerson,
   searchPeople,
 } from './ariaApolloService.js';
@@ -92,7 +93,52 @@ export function mountAriaRoutes(app, { admin }) {
         return res.status(502).json({ error: 'Could not translate description', detail: e.message });
       }
 
-      await queryRef.set({ status: 'running', queryParams }, { merge: true });
+      // Step 2.5: resolve organization_names → organization_ids. Apollo's
+      // api_search only filters companies by ID, not name. We do this server-
+      // side so Claude can keep emitting human-readable names. We also save
+      // the resolved orgs back to the query doc so the UI can show what the
+      // user's "Poppi" matched to ("poppi / drinkpoppi.com").
+      let resolvedOrgs = [];
+      if (Array.isArray(queryParams.organization_names) && queryParams.organization_names.length > 0) {
+        for (const name of queryParams.organization_names) {
+          try {
+            const org = await resolveOrganizationByName(name);
+            if (org?.id) {
+              resolvedOrgs.push({ query: name, id: org.id, name: org.name || null, domain: org.primary_domain || null });
+            } else {
+              resolvedOrgs.push({ query: name, id: null, name: null, domain: null });
+              console.warn('[aria] org-resolve: no match for', name);
+            }
+          } catch (e) {
+            console.error('[aria] org-resolve error for', name, e.message);
+            resolvedOrgs.push({ query: name, id: null, name: null, domain: null, error: e.message });
+          }
+        }
+        const ids = resolvedOrgs.filter((r) => r.id).map((r) => r.id);
+        // Replace organization_names with organization_ids before sending.
+        delete queryParams.organization_names;
+        if (ids.length) queryParams.organization_ids = ids;
+        // If user named companies but NONE resolved, that's a hard fail —
+        // returning random results would be more misleading than zero results.
+        if (ids.length === 0) {
+          const tried = resolvedOrgs.map((r) => r.query).join(', ');
+          await queryRef.set(
+            {
+              status: 'failed',
+              queryParams,
+              resolvedOrgs,
+              errorMessage: `Couldn't find any of these companies in Apollo: ${tried}`,
+            },
+            { merge: true },
+          );
+          return res.status(404).json({
+            error: `Couldn't resolve any of the named companies in Apollo: ${tried}. Try a more exact name or a different spelling.`,
+            resolvedOrgs,
+          });
+        }
+      }
+
+      await queryRef.set({ status: 'running', queryParams, resolvedOrgs }, { merge: true });
 
       // Step 3: call Apollo.
       let apolloRes;

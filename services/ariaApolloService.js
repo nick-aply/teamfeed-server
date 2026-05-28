@@ -52,6 +52,46 @@ export async function searchPeople(params) {
 }
 
 const APOLLO_MATCH_URL = 'https://api.apollo.io/api/v1/people/match';
+const APOLLO_ORG_SEARCH_URL = 'https://api.apollo.io/api/v1/organizations/search';
+
+// Resolve a company name to an Apollo organization ID. Returns the best
+// match — exact name (case-insensitive) preferred, then prefix match, then
+// first result. Returns null if no match. mixed_companies/search returns
+// wrong/clothing brands for short names; organizations/search is more
+// accurate per empirical testing.
+export async function resolveOrganizationByName(name) {
+  const apiKey = process.env.APOLLO_API_KEY;
+  if (!apiKey) {
+    const e = new Error('Apollo API key not configured on server');
+    e.code = 'APOLLO_NOT_CONFIGURED';
+    throw e;
+  }
+  const res = await fetch(APOLLO_ORG_SEARCH_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Cache-Control': 'no-cache',
+      'X-Api-Key': apiKey,
+    },
+    body: JSON.stringify({ per_page: 10, q_organization_name: name }),
+  });
+  if (!res.ok) {
+    const json = await res.json().catch(() => null);
+    const e = new Error(json?.error || `Apollo org-search returned ${res.status}`);
+    e.code = 'APOLLO_HTTP_ERROR';
+    e.status = res.status;
+    e.payload = json;
+    throw e;
+  }
+  const json = await res.json();
+  const orgs = json?.organizations || [];
+  if (!orgs.length) return null;
+  const q = name.trim().toLowerCase();
+  const exact = orgs.find((o) => (o.name || '').toLowerCase() === q);
+  if (exact) return exact;
+  const startsWith = orgs.find((o) => (o.name || '').toLowerCase().startsWith(q));
+  return startsWith || orgs[0];
+}
 
 // Reveal a single Apollo person. Costs 1 Apollo credit per call.
 // Apollo returns the full person record with email + last_name + linkedin_url

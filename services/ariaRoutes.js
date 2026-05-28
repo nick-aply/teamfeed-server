@@ -8,7 +8,13 @@
 //       tfTeams/{uid}.manager === true (matches the Firestore rule).
 
 import { isAnthropicConfigured, translateToApolloParams } from './ariaClaudeService.js';
-import { isApolloConfigured, mapApolloPersonToContact, searchPeople } from './ariaApolloService.js';
+import {
+  isApolloConfigured,
+  mapApolloPersonToContact,
+  mapApolloRevealToContactPatch,
+  revealApolloPerson,
+  searchPeople,
+} from './ariaApolloService.js';
 
 const RESULT_CAP = 100;
 
@@ -158,6 +164,81 @@ export function mountAriaRoutes(app, { admin }) {
         .catch(() => {});
       return res.status(500).json({ error: 'Unexpected server error', detail: e.message });
     }
+  });
+
+  // ── POST /api/aria/contacts/:contactId/reveal ───────────────────────────
+  // Burns 1 Apollo credit. Use sparingly.
+  app.post('/api/aria/contacts/:contactId/reveal', requireAdmin, async (req, res) => {
+    const { contactId } = req.params;
+    if (!isApolloConfigured()) {
+      return res.status(503).json({ error: 'Apollo API key not configured on server' });
+    }
+    try {
+      const ref = db.doc(`Contacts/${contactId}`);
+      const snap = await ref.get();
+      if (!snap.exists) return res.status(404).json({ error: 'Contact not found' });
+      const c = snap.data();
+      if (!c.apolloPersonId) {
+        return res.status(400).json({ error: 'Contact has no apolloPersonId — can only reveal Apollo-sourced contacts' });
+      }
+      const person = await revealApolloPerson(c.apolloPersonId);
+      const patch = mapApolloRevealToContactPatch(person);
+      if (!patch || Object.keys(patch).length === 0) {
+        return res.status(502).json({ error: 'Apollo returned no usable fields for this person' });
+      }
+      await ref.update({ ...patch, updatedAt: FieldValue.serverTimestamp() });
+      return res.json({ contactId, patch });
+    } catch (e) {
+      console.error('[aria] reveal error:', e.status, e.message, e.payload || '');
+      return res.status(502).json({ error: 'Reveal failed', detail: e.message });
+    }
+  });
+
+  // ── POST /api/aria/contacts/bulk-reveal ────────────────────────────────
+  // Reveals up to 25 contacts in parallel (capped to keep credit blast-radius
+  // small). Burns 1 Apollo credit per contact. Returns per-contact result.
+  app.post('/api/aria/contacts/bulk-reveal', requireAdmin, async (req, res) => {
+    const { contactIds } = req.body || {};
+    if (!Array.isArray(contactIds) || contactIds.length === 0) {
+      return res.status(400).json({ error: 'contactIds[] required' });
+    }
+    if (contactIds.length > 25) {
+      return res.status(400).json({ error: 'Maximum 25 reveals per request (credit blast-radius cap)' });
+    }
+    if (!isApolloConfigured()) {
+      return res.status(503).json({ error: 'Apollo API key not configured on server' });
+    }
+    const results = await Promise.all(
+      contactIds.map(async (contactId) => {
+        try {
+          const ref = db.doc(`Contacts/${contactId}`);
+          const snap = await ref.get();
+          if (!snap.exists) return { contactId, ok: false, error: 'not found' };
+          const c = snap.data();
+          if (!c.apolloPersonId) {
+            return { contactId, ok: false, error: 'no apolloPersonId' };
+          }
+          // Skip if already revealed (cheap shortcut — saves credits).
+          if (c.email && c.email.length > 0) {
+            return { contactId, ok: true, skipped: 'already revealed' };
+          }
+          const person = await revealApolloPerson(c.apolloPersonId);
+          const patch = mapApolloRevealToContactPatch(person);
+          if (!patch || Object.keys(patch).length === 0) {
+            return { contactId, ok: false, error: 'no usable fields returned' };
+          }
+          await ref.update({ ...patch, updatedAt: FieldValue.serverTimestamp() });
+          return { contactId, ok: true, patch };
+        } catch (e) {
+          console.error('[aria] bulk-reveal item error:', contactId, e.message);
+          return { contactId, ok: false, error: e.message };
+        }
+      }),
+    );
+    const revealed = results.filter((r) => r.ok && !r.skipped).length;
+    const skipped = results.filter((r) => r.skipped).length;
+    const failed = results.filter((r) => !r.ok).length;
+    return res.json({ revealed, skipped, failed, results });
   });
 
   // ── POST /api/aria/apollo-search/:queryId/assign-to-list ────────────────
